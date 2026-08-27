@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+venv/
+*.aac
+*.wav
+*.mp3
+data/
+models/*.h5
