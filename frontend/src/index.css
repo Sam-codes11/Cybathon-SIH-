@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+:root {
+  font-family: "Inter", sans-serif;
+  background: #07080c;
+  color: white;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #07080c;
+}
+
+button,
+a {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
