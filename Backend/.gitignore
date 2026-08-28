@@ -7,3 +7,21 @@ venv/
 *.mp3
 data/
 models/*.h5
+# Node
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+.venv/
+venv/
