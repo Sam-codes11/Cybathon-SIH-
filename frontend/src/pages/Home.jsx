@@ -1,3 +1,5 @@
+import { useRef, useState } from "react"
+
 import { useRef } from "react"
 import { useNavigate } from "react-router-dom"
 import {
@@ -38,6 +40,29 @@ const protectionPoints = [
 function Home() {
   const navigate = useNavigate()
   const uploadRef = useRef(null)
+  const [recording, setRecording] = useState(false)
+
+const startRecording = async () => {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  const recorder = new MediaRecorder(stream)
+  const chunks = []
+
+  recorder.ondataavailable = (e) => chunks.push(e.data)
+
+  recorder.onstop = () => {
+    const audioBlob = new Blob(chunks, { type: "audio/webm" })
+    navigate("/analyzing", { state: { source: "Microphone sample", audioBlob } })
+  }
+
+  recorder.start()
+  setRecording(true)
+
+  setTimeout(() => {
+    recorder.stop()
+    setRecording(false)
+  }, 5000) // 5 second recording — yahi number badalna hai duration ke liye
+}
+
   const reduceMotion = useReducedMotion()
 
   const enter = reduceMotion
@@ -106,11 +131,7 @@ function Home() {
               <div className="mt-9 flex flex-col gap-3 sm:flex-row">
                 <motion.button
                   type="button"
-                  onClick={() =>
-                    navigate("/analyzing", {
-                      state: { source: "Microphone sample" },
-                    })
-                  }
+                  onClick={startRecording}
                   className="group inline-flex items-center justify-center gap-2 rounded-xl bg-[#e7efff] px-5 py-3.5 text-sm font-semibold text-[#10182a] transition hover:-translate-y-0.5 hover:bg-white"
                   whileHover={reduceMotion ? {} : { y: -2 }}
                   whileTap={reduceMotion ? {} : { scale: 0.98 }}
