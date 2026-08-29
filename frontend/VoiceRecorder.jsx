@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 
-const WEBSOCKET_URL = 'wss://your-backend-server.com/audio-stream';
+const WEBSOCKET_URL = 'ws://localhost:8000/audio-stream';
 const TIMESLICE_MS = 250; // How often MediaRecorder emits chunks
 
 const RECORDING_STATES = {
