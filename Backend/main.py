@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from audio_routes import router as audio_router
 
 app = FastAPI()
@@ -13,6 +13,14 @@ app.add_middleware(
 )
 
 app.include_router(audio_router)
+
+@app.websocket("/audio-stream")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    while True:
+        data = await websocket.receive_bytes()
+        # Process and handle audio streaming data here
+        await websocket.send_text("Audio chunk received")
 
 @app.get("/")
 def home():
