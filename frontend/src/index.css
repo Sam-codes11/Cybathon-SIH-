@@ -1,32 +1,139 @@
 @import "tailwindcss";
 
-:root {
-  font-family: "Inter", sans-serif;
-  background: #07080c;
-  color: white;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+@theme {
+  --color-ink-900: #12181B;
+  --color-paper-50: #F5F7F8;
+  --color-verified-500: #2C9C8F;
+  --color-caution-500: #D98F3E;
+  --color-alert-600: #B23B33;
+  --color-ink-slate-600: #3A4448;
+
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Public Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-pill: 999px;
+
+  --shadow-resting: 0 1px 2px rgba(18,24,27,0.06);
+  --shadow-raised: 0 8px 24px rgba(18,24,27,0.16);
 }
 
-* {
-  box-sizing: border-box;
+body {
+  background: var(--color-paper-50);
+  color: var(--color-ink-slate-600);
+  font-family: var(--font-body);
 }
 
 html {
   scroll-behavior: smooth;
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  background: #07080c;
+.hero-glow {
+  position: absolute;
+  z-index: -1;
+  border-radius: 9999px;
+  filter: blur(2px);
+  pointer-events: none;
+}
+
+.hero-glow-left {
+  width: 20rem;
+  height: 20rem;
+  top: -5rem;
+  left: -8rem;
+  background: radial-gradient(circle, rgba(198, 232, 218, 0.8), rgba(198, 232, 218, 0));
+}
+
+.hero-glow-right {
+  width: 26rem;
+  height: 26rem;
+  right: -9rem;
+  bottom: -11rem;
+  background: radial-gradient(circle, rgba(243, 223, 169, 0.7), rgba(243, 223, 169, 0));
+}
+
+.cyber-grid {
+  background-image: linear-gradient(rgba(132, 164, 222, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(132, 164, 222, 0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.cyber-aurora {
+  position: absolute;
+  z-index: -1;
+  inset: -20rem -15rem auto auto;
+  width: 46rem;
+  height: 46rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(73, 119, 255, 0.18), rgba(111, 67, 255, 0.08) 36%, transparent 68%);
+  filter: blur(8px);
+}
+
+.signal-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.signal-card::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(125deg, rgba(137, 179, 255, 0.09), transparent 28%, transparent 72%, rgba(157, 103, 255, 0.08));
+}
+
+.orb-stage {
+  position: relative;
+  display: grid;
+  min-height: 15rem;
+  place-content: end center;
+  overflow: hidden;
+  border: 1px solid rgba(156, 183, 255, 0.15);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  text-align: center;
+  background: radial-gradient(circle at 50% 38%, rgba(48, 92, 190, 0.25), transparent 40%), #090f1d;
+}
+
+.signal-orb,
+.signal-orb span {
+  position: absolute;
+  border-radius: 999px;
+}
+
+.signal-orb {
+  top: 1.4rem;
+  left: 50%;
+  width: 8rem;
+  height: 8rem;
+  transform: translateX(-50%);
+  border: 2px solid #91c8ff;
+  box-shadow: 0 0 10px #4e8cff, 0 0 36px rgba(99, 129, 255, 0.7), inset 0 0 16px rgba(119, 176, 255, 0.7);
+  animation: orb-breathe 3.2s ease-in-out infinite;
+}
+
+.signal-orb span:nth-child(1) { inset: -0.65rem; border: 1px solid rgba(115, 153, 255, 0.7); }
+.signal-orb span:nth-child(2) { inset: -1.3rem; border: 1px solid rgba(177, 107, 255, 0.45); animation: orb-spin 9s linear infinite; }
+.signal-orb span:nth-child(3) { inset: 1.15rem; background: radial-gradient(circle, rgba(188, 224, 255, 0.8), rgba(65, 107, 255, 0.2) 55%, transparent 70%); }
+
+.spotlight-panel {
+  background-image: radial-gradient(20rem circle at var(--x, 50%) var(--y, 0%), rgba(98, 143, 255, 0.12), transparent 40%);
+}
+
+@keyframes orb-breathe { 50% { transform: translateX(-50%) scale(1.06); box-shadow: 0 0 14px #5c9cff, 0 0 54px rgba(129, 90, 255, 0.78), inset 0 0 22px rgba(137, 193, 255, 0.85); } }
+@keyframes orb-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
 
 button,
 a {
-  font: inherit;
+  -webkit-tap-highlight-color: transparent;
 }
 
-button {
-  cursor: pointer;
+:focus-visible {
+  outline: 2px solid var(--color-verified-500);
+  outline-offset: 3px;
 }
