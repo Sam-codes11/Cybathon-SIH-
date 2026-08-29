@@ -18,6 +18,20 @@ function Result() {
 
   const backendData = location.state?.result
 
+  if (backendData?.silent) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-[#f3f5f7] text-[#172236]">
+        <div className="text-center px-5">
+          <h1 className="text-2xl font-semibold">No speech detected</h1>
+          <p className="mt-2 text-sm text-[#667389]">Please try again and speak clearly.</p>
+          <button onClick={() => navigate("/")} className="mt-6 rounded-xl bg-[#14213b] px-5 py-3 text-white font-semibold">
+            Try Again
+          </button>
+        </div>
+      </main>
+    )
+  }
+
   const isReal = backendData?.result === "real"
   const confidencePercent = Math.round((backendData?.confidence ?? 0) * 100)
   const riskScore = isReal ? 100 - confidencePercent : confidencePercent

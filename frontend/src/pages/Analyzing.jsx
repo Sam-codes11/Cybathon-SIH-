@@ -6,6 +6,21 @@ import WaveformVerdict from "../components/WaveformVerdict"
 import { motion } from "framer-motion"
 import { WavyBackground } from "../components/WavyBackground"
 
+const checkSilence = async (blob) => {
+  const arrayBuffer = await blob.arrayBuffer()
+  const audioContext = new AudioContext()
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+  const channelData = audioBuffer.getChannelData(0)
+
+  let sum = 0
+  for (let i = 0; i < channelData.length; i++) {
+    sum += channelData[i] * channelData[i]
+  }
+  const rms = Math.sqrt(sum / channelData.length)
+
+  return rms < 0.01
+}
+
 function Analyzing() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -17,9 +32,17 @@ function Analyzing() {
     const sendToBackend = async () => {
       setStage(1)
 
-      const formData = new FormData()
       const audioBlob = location.state?.audioBlob
 
+      if (audioBlob) {
+        const isSilent = await checkSilence(audioBlob)
+        if (isSilent) {
+          navigate("/result", { replace: true, state: { result: { silent: true } } })
+          return
+        }
+      }
+
+      const formData = new FormData()
       if (audioBlob) {
         formData.append("file", audioBlob, "recording.webm")
       }

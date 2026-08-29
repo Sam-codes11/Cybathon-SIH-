@@ -17,6 +17,21 @@ import { motion, useReducedMotion } from "framer-motion"
 import Navbar from "../components/Navbar"
 import { WavyBackground } from "../components/WavyBackground"
 
+const checkSilence = async (blob) => {
+  const arrayBuffer = await blob.arrayBuffer()
+  const audioContext = new AudioContext()
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+  const channelData = audioBuffer.getChannelData(0)
+
+  let sum = 0
+  for (let i = 0; i < channelData.length; i++) {
+    sum += channelData[i] * channelData[i]
+  }
+  const rms = Math.sqrt(sum / channelData.length)
+
+  return rms < 0.01
+}
+
 const details = [
   ["Voice classification", "Human, cloned, converted, or synthesized."],
   ["Risk assessment", "A clear score with the evidence behind it."],
@@ -79,7 +94,7 @@ const startRecording = async () => {
 
     if (file) {
       navigate("/analyzing", {
-        state: { source: file.name },
+        state: { source: file.name, audioBlob: file },
       })
     }
 
