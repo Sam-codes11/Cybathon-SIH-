@@ -58,7 +58,7 @@ const startRecording = async () => {
   setTimeout(() => {
     recorder.stop()
     setRecording(false)
-  }, 5000) // 5 second recording — yahi number badalna hai duration ke liye
+  }, 10000) // 5 second recording — yahi number badalna hai duration ke liye
 }
 
   const reduceMotion = useReducedMotion()
