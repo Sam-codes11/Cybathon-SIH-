@@ -14,9 +14,34 @@ function Analyzing() {
   const stages = ["Preparing audio", "Reading voice markers", "Checking attack patterns"]
 
   useEffect(() => {
-    const timers = [setTimeout(() => setStage(1), 850), setTimeout(() => setStage(2), 1750), setTimeout(() => navigate("/result", { replace: true }), 2850)]
-    return () => timers.forEach(clearTimeout)
-  }, [navigate])
+    const sendToBackend = async () => {
+      setStage(1)
+
+      const formData = new FormData()
+      const audioBlob = location.state?.audioBlob
+
+      if (audioBlob) {
+        formData.append("file", audioBlob, "recording.webm")
+      }
+
+      setStage(2)
+
+      try {
+        const response = await fetch("http://127.0.0.1:8000/analyze", {
+          method: "POST",
+          body: formData,
+        })
+        const data = await response.json()
+
+        navigate("/result", { replace: true, state: { result: data } })
+      } catch (error) {
+        console.error("Backend error:", error)
+        navigate("/result", { replace: true, state: { result: null } })
+      }
+    }
+
+    sendToBackend()
+  }, [navigate, location.state])
 
   return (
     <main className="min-h-screen bg-[#101b2f] text-white">
