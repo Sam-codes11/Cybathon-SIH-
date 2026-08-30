@@ -12,7 +12,7 @@ import WaveformVerdict from "../components/WaveformVerdict"
 import { motion } from "framer-motion"
 import { WavyBackground } from "../components/WavyBackground"
 
-const RECORDING_DURATION = 10
+const RECORDING_DURATION = 7
 
 const checkSilence = async (blob) => {
   const arrayBuffer = await blob.arrayBuffer()
