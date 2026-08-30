@@ -5,7 +5,6 @@ import Result from "./pages/Result"
 import Enrollment from "./pages/Enrollment"
 import Dashboard from "./pages/Dashboard"
 import CallDetail from "./pages/CallDetail"
-import VoiceRecorder from "./VoiceRecorder"
 
 function App() {
   return (
@@ -17,7 +16,6 @@ function App() {
         <Route path="/enroll" element={<Enrollment />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/call/:id" element={<CallDetail />} />
-        <Route path="/recorder" element={<VoiceRecorder/>} />
       </Routes>
     </BrowserRouter>
   )
