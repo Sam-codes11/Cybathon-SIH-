@@ -7,3 +7,7 @@ venv/
 *.mp3
 data/
 models/*.h5
+node_modules/
+**/node_modules/
+dist/
+**/dist/
