@@ -1,5 +1,5 @@
 from fastapi import FastAPI, WebSocket
-from audio_routes import router as audio_router
+from .audio_routes import router as audio_router
 
 app = FastAPI()
 
