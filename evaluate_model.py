@@ -1,9 +1,11 @@
+
 from pathlib import Path
 import soundfile as sf
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
+import numpy as np
+
 
 # ============================================================
 # CONFIG
@@ -22,295 +24,73 @@ MODEL_PATH = Path(
 )
 
 SAMPLE_RATE = 16000
-AUDIO_SECONDS = 4
-NUM_SAMPLES = SAMPLE_RATE * AUDIO_SECONDS
-BATCH_SIZE = 16
+
+# Model expects 4-second audio
+WINDOW_SAMPLES = 16000 * 4
+
+# Move window by 2 seconds
+HOP_SAMPLES = 16000 * 2
+
+THRESHOLD = 0.50
 
 DEVICE = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
 )
 
+
 # ============================================================
-# DEVICE
+# MODEL
+# ============================================================
+
+class SpoofCNN(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 2)
+        )
+
+    def forward(self, x):
+        return self.classifier(
+            self.features(x)
+        )
+
+
+# ============================================================
+# LOAD MODEL
 # ============================================================
 
 print("=" * 60)
-print("ASVSPOOF EVALUATION")
+print("WHOLE-AUDIO ASVSPOOF EVALUATION")
 print("=" * 60)
 
 print("Device:", DEVICE)
 
 if torch.cuda.is_available():
     print("GPU:", torch.cuda.get_device_name(0))
-
-# ============================================================
-# DATASET
-# ============================================================
-
-class ASVspoofDataset(Dataset):
-
-    def __init__(self, audio_dir, protocol_file):
-
-        self.samples = []
-
-        with open(
-            protocol_file,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            for line in f:
-
-                parts = line.strip().split()
-
-                if len(parts) < 5:
-                    continue
-
-                audio_id = parts[1]
-                label_name = parts[-1]
-
-                audio_path = (
-                    audio_dir /
-                    f"{audio_id}.flac"
-                )
-
-                if audio_path.exists():
-
-                    # 0 = bonafide
-                    # 1 = spoof
-
-                    label = (
-                        0
-                        if label_name == "bonafide"
-                        else 1
-                    )
-
-                    self.samples.append(
-                        (
-                            audio_path,
-                            label
-                        )
-                    )
-
-        print(
-            f"{protocol_file.name}: "
-            f"{len(self.samples)} usable files"
-        )
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, index):
-
-        path, label = self.samples[index]
-
-        # ----------------------------------------------------
-        # Load FLAC
-        # ----------------------------------------------------
-
-        audio, sample_rate = sf.read(
-            str(path),
-            dtype="float32"
-        )
-
-        waveform = torch.tensor(
-            audio,
-            dtype=torch.float32
-        )
-
-        # ----------------------------------------------------
-        # Stereo → mono
-        # ----------------------------------------------------
-
-        if waveform.ndim > 1:
-
-            waveform = waveform.mean(
-                dim=1
-            )
-
-        # ----------------------------------------------------
-        # Verify sample rate
-        # ----------------------------------------------------
-
-        if sample_rate != SAMPLE_RATE:
-
-            raise RuntimeError(
-                f"Unexpected sample rate "
-                f"{sample_rate} in {path.name}"
-            )
-
-        # ----------------------------------------------------
-        # Exactly 4 seconds
-        # ----------------------------------------------------
-
-        if waveform.numel() < NUM_SAMPLES:
-
-            waveform = F.pad(
-                waveform,
-                (
-                    0,
-                    NUM_SAMPLES - waveform.numel()
-                )
-            )
-
-        else:
-
-            waveform = waveform[
-                :NUM_SAMPLES
-            ]
-
-        # ----------------------------------------------------
-        # STFT
-        # EXACTLY SAME AS TRAINING
-        # ----------------------------------------------------
-
-        window = torch.hann_window(
-            1024
-        )
-
-        spectrogram = torch.stft(
-            waveform,
-            n_fft=1024,
-            hop_length=512,
-            window=window,
-            return_complex=True
-        )
-
-        # Magnitude
-        spectrogram = torch.abs(
-            spectrogram
-        )
-
-        # Log scale
-        spectrogram = torch.log(
-            spectrogram + 1e-6
-        )
-
-        # CNN input:
-        # [channel, frequency, time]
-
-        spectrogram = spectrogram.unsqueeze(0)
-
-        return (
-            spectrogram,
-            torch.tensor(
-                label,
-                dtype=torch.long
-            )
-        )
-
-
-# ============================================================
-# CNN
-# EXACT SAME ARCHITECTURE AS TRAINING
-# ============================================================
-
-class SpoofCNN(nn.Module):
-
-    def __init__(self):
-
-        super().__init__()
-
-        self.features = nn.Sequential(
-
-            nn.Conv2d(
-                1,
-                32,
-                kernel_size=3,
-                padding=1
-            ),
-
-            nn.BatchNorm2d(32),
-
-            nn.ReLU(),
-
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(
-                32,
-                64,
-                kernel_size=3,
-                padding=1
-            ),
-
-            nn.BatchNorm2d(64),
-
-            nn.ReLU(),
-
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(
-                64,
-                128,
-                kernel_size=3,
-                padding=1
-            ),
-
-            nn.BatchNorm2d(128),
-
-            nn.ReLU(),
-
-            nn.AdaptiveAvgPool2d(
-                (1, 1)
-            )
-        )
-
-        self.classifier = nn.Sequential(
-
-            nn.Flatten(),
-
-            nn.Linear(
-                128,
-                64
-            ),
-
-            nn.ReLU(),
-
-            nn.Dropout(0.3),
-
-            nn.Linear(
-                64,
-                2
-            )
-        )
-
-    def forward(self, x):
-
-        x = self.features(x)
-
-        return self.classifier(x)
-
-
-# ============================================================
-# LOAD DATA
-# ============================================================
-
-print("\nLoading evaluation dataset...")
-
-eval_dataset = ASVspoofDataset(
-    EVAL_AUDIO_DIR,
-    EVAL_PROTOCOL
-)
-
-if len(eval_dataset) == 0:
-
-    raise RuntimeError(
-        "No evaluation audio found."
-    )
-
-eval_loader = DataLoader(
-    eval_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    num_workers=0,
-    pin_memory=torch.cuda.is_available()
-)
-
-# ============================================================
-# LOAD MODEL
-# ============================================================
-
-print("\nLoading trained model...")
 
 model = SpoofCNN().to(DEVICE)
 
@@ -323,7 +103,175 @@ model.load_state_dict(
 
 model.eval()
 
-print("✓ Model loaded successfully")
+print("✓ Model loaded")
+
+
+# ============================================================
+# READ PROTOCOL
+# ============================================================
+
+samples = []
+
+with open(
+    EVAL_PROTOCOL,
+    "r",
+    encoding="utf-8"
+) as f:
+
+    for line in f:
+
+        parts = line.strip().split()
+
+        if len(parts) < 5:
+            continue
+
+        audio_id = parts[1]
+        label_name = parts[-1]
+
+        audio_path = (
+            EVAL_AUDIO_DIR /
+            f"{audio_id}.flac"
+        )
+
+        if audio_path.exists():
+
+            label = (
+                0
+                if label_name == "bonafide"
+                else 1
+            )
+
+            samples.append(
+                (audio_path, label)
+            )
+
+
+print(
+    f"Usable files: {len(samples):,}"
+)
+
+
+# ============================================================
+# PREDICT ONE 4-SECOND WINDOW
+# ============================================================
+
+def predict_window(waveform):
+
+    # Pad if shorter than 4 seconds
+    if len(waveform) < WINDOW_SAMPLES:
+
+        waveform = F.pad(
+            waveform,
+            (0, WINDOW_SAMPLES - len(waveform))
+        )
+
+    # Take exactly 4 seconds
+    waveform = waveform[:WINDOW_SAMPLES]
+
+    # STFT
+    window = torch.hann_window(
+        1024,
+        device=DEVICE
+    )
+
+    spectrogram = torch.stft(
+        waveform.to(DEVICE),
+        n_fft=1024,
+        hop_length=512,
+        window=window,
+        return_complex=True
+    )
+
+    spectrogram = torch.abs(
+        spectrogram
+    )
+
+    spectrogram = torch.log(
+        spectrogram + 1e-6
+    )
+
+    # [Frequency, Time]
+    # -> [Batch, Channel, Frequency, Time]
+
+    spectrogram = spectrogram.unsqueeze(0).unsqueeze(0)
+
+    with torch.no_grad():
+
+        output = model(
+            spectrogram
+        )
+
+        probability = torch.softmax(
+            output,
+            dim=1
+        )
+
+    # Probability of SPOOF
+    return probability[0, 1].item()
+
+
+# ============================================================
+# PREDICT WHOLE AUDIO
+# ============================================================
+
+def predict_audio(audio_path):
+
+    audio, sr = sf.read(
+        str(audio_path),
+        dtype="float32"
+    )
+
+    if sr != SAMPLE_RATE:
+        raise RuntimeError(
+            f"Wrong sample rate: {sr}"
+        )
+
+    waveform = torch.tensor(
+        audio,
+        dtype=torch.float32
+    )
+
+    # Stereo -> mono
+    if waveform.ndim > 1:
+        waveform = waveform.mean(dim=1)
+
+    # --------------------------------------------------------
+    # SPLIT ENTIRE AUDIO INTO OVERLAPPING WINDOWS
+    # --------------------------------------------------------
+
+    probabilities = []
+
+    start = 0
+
+    while start < len(waveform):
+
+        segment = waveform[
+            start:start + WINDOW_SAMPLES
+        ]
+
+        spoof_probability = predict_window(
+            segment
+        )
+
+        probabilities.append(
+            spoof_probability
+        )
+
+        start += HOP_SAMPLES
+
+    # --------------------------------------------------------
+    # FILE-LEVEL SCORE
+    # --------------------------------------------------------
+
+    # Highest spoof probability anywhere
+    # in the entire audio
+
+    max_spoof_probability = max(
+        probabilities
+    )
+
+    return max_spoof_probability
+
 
 # ============================================================
 # EVALUATION
@@ -338,78 +286,70 @@ false_positive = 0
 false_negative = 0
 
 all_probabilities = []
+all_labels = []
+
 
 print("\nEvaluating...\n")
 
-with torch.no_grad():
 
-    for batch_index, (features, labels) in enumerate(
-        eval_loader
-    ):
+for index, (audio_path, label) in enumerate(
+    samples,
+    start=1
+):
 
-        features = features.to(
-            DEVICE,
-            non_blocking=True
+    try:
+
+        spoof_probability = predict_audio(
+            audio_path
         )
 
-        labels = labels.to(
-            DEVICE,
-            non_blocking=True
+        # Final file-level prediction
+        prediction = (
+            1
+            if spoof_probability >= THRESHOLD
+            else 0
         )
 
-        outputs = model(features)
-
-        probabilities = torch.softmax(
-            outputs,
-            dim=1
+        # Save for threshold sweep
+        all_probabilities.append(
+            spoof_probability
         )
 
-        predictions = outputs.argmax(
-            dim=1
+        all_labels.append(
+            label
         )
 
-        # ----------------------------------------------
         # Accuracy
-        # ----------------------------------------------
+        if prediction == label:
+            correct += 1
 
-        correct += (
-            predictions == labels
-        ).sum().item()
+        total += 1
 
-        total += labels.size(0)
-
-        # ----------------------------------------------
         # Confusion matrix
-        # ----------------------------------------------
+        if prediction == 1 and label == 1:
+            true_positive += 1
 
-        true_positive += (
-            ((predictions == 1) & (labels == 1))
-        ).sum().item()
+        elif prediction == 0 and label == 0:
+            true_negative += 1
 
-        true_negative += (
-            ((predictions == 0) & (labels == 0))
-        ).sum().item()
+        elif prediction == 1 and label == 0:
+            false_positive += 1
 
-        false_positive += (
-            ((predictions == 1) & (labels == 0))
-        ).sum().item()
+        elif prediction == 0 and label == 1:
+            false_negative += 1
 
-        false_negative += (
-            ((predictions == 0) & (labels == 1))
-        ).sum().item()
+        # Progress
+        if index % 100 == 0:
+            print(
+                f"Processed {index:,}/{len(samples):,}"
+            )
 
-        # Probability of spoof
-        all_probabilities.extend(
-            probabilities[:, 1].cpu().tolist()
+    except Exception as e:
+
+        print(
+            f"ERROR: {audio_path.name}: {e}"
         )
 
-        if batch_index % 100 == 0:
-
-            print(
-                f"Processed "
-                f"{batch_index * BATCH_SIZE}/"
-                f"{len(eval_dataset)}"
-            )
 
 # ============================================================
 # METRICS
@@ -420,23 +360,24 @@ accuracy = correct / total
 precision = (
     true_positive /
     (true_positive + false_positive)
-    if (true_positive + false_positive) > 0
+    if true_positive + false_positive > 0
     else 0
 )
 
 recall = (
     true_positive /
     (true_positive + false_negative)
-    if (true_positive + false_negative) > 0
+    if true_positive + false_negative > 0
     else 0
 )
 
 f1 = (
     2 * precision * recall /
     (precision + recall)
-    if (precision + recall) > 0
+    if precision + recall > 0
     else 0
 )
+
 
 # ============================================================
 # RESULTS
@@ -444,62 +385,163 @@ f1 = (
 
 print("\n")
 print("=" * 60)
-print("EVALUATION RESULTS")
+print("WHOLE-AUDIO EVALUATION RESULTS")
 print("=" * 60)
 
-print(
-    f"Total samples : {total}"
-)
-
-print(
-    f"Correct       : {correct}"
-)
-
-print(
-    f"Accuracy      : {accuracy * 100:.2f}%"
-)
-
-print(
-    f"Precision     : {precision * 100:.2f}%"
-)
-
-print(
-    f"Recall        : {recall * 100:.2f}%"
-)
-
-print(
-    f"F1 Score      : {f1 * 100:.2f}%"
-)
+print(f"Total files : {total:,}")
+print(f"Correct     : {correct:,}")
+print(f"Accuracy    : {accuracy * 100:.2f}%")
+print(f"Precision   : {precision * 100:.2f}%")
+print(f"Recall      : {recall * 100:.2f}%")
+print(f"F1 Score    : {f1 * 100:.2f}%")
 
 print("\nConfusion Matrix")
 print("-" * 40)
 
-print(
-    f"True Negative  : {true_negative}"
-)
-
-print(
-    f"False Positive : {false_positive}"
-)
-
-print(
-    f"False Negative : {false_negative}"
-)
-
-print(
-    f"True Positive  : {true_positive}"
-)
+print(f"True Negative  : {true_negative:,}")
+print(f"False Positive : {false_positive:,}")
+print(f"False Negative : {false_negative:,}")
+print(f"True Positive  : {true_positive:,}")
 
 print("=" * 60)
 
-print("\nInterpretation:")
+
+# ============================================================
+# THRESHOLD SWEEP
+# ============================================================
+
+probs = np.array(all_probabilities)
+labels = np.array(all_labels)
+
+print("\nTHRESHOLD SWEEP")
+print("-" * 60)
 
 print(
-    "0 = BONAFIDE (real human speech)"
+    f"{'Threshold':>10}"
+    f"{'Precision':>12}"
+    f"{'Recall':>12}"
+    f"{'F1':>10}"
+    f"{'FN':>10}"
+    f"{'FP':>10}"
+)
+
+for threshold in [
+    0.50,
+    0.40,
+    0.30,
+    0.25,
+    0.20,
+    0.15,
+    0.10
+]:
+
+    predictions = (
+        probs >= threshold
+    ).astype(int)
+
+    tp = (
+        (predictions == 1) &
+        (labels == 1)
+    ).sum()
+
+    fp = (
+        (predictions == 1) &
+        (labels == 0)
+    ).sum()
+
+    fn = (
+        (predictions == 0) &
+        (labels == 1)
+    ).sum()
+
+    precision_t = (
+        tp / (tp + fp)
+        if tp + fp > 0
+        else 0
+    )
+
+    recall_t = (
+        tp / (tp + fn)
+        if tp + fn > 0
+        else 0
+    )
+
+    f1_t = (
+        2 * precision_t * recall_t /
+        (precision_t + recall_t)
+        if precision_t + recall_t > 0
+        else 0
+    )
+
+    print(
+        f"{threshold:>10.2f}"
+        f"{precision_t * 100:>11.2f}%"
+        f"{recall_t * 100:>11.2f}%"
+        f"{f1_t * 100:>9.2f}%"
+        f"{fn:>10,}"
+        f"{fp:>10,}"
+    )
+
+
+# ============================================================
+# EER
+# ============================================================
+
+thresholds = np.linspace(
+    0,
+    1,
+    1001
+)
+
+bonafide_scores = probs[
+    labels == 0
+]
+
+spoof_scores = probs[
+    labels == 1
+]
+
+frr = []
+far = []
+
+for threshold in thresholds:
+
+    # Bonafide incorrectly detected as spoof
+    frr.append(
+        (bonafide_scores >= threshold).mean()
+    )
+
+    # Spoof incorrectly detected as real
+    far.append(
+        (spoof_scores < threshold).mean()
+    )
+
+frr = np.array(frr)
+far = np.array(far)
+
+eer_index = np.argmin(
+    np.abs(frr - far)
+)
+
+eer = (
+    frr[eer_index] +
+    far[eer_index]
+) / 2
+
+eer_threshold = thresholds[
+    eer_index
+]
+
+
+print("\nEER")
+print("-" * 40)
+
+print(
+    f"EER         : {eer * 100:.2f}%"
 )
 
 print(
-    "1 = SPOOF (AI/generated/manipulated speech)"
+    f"Threshold   : {eer_threshold:.3f}"
 )
 
 print("=" * 60)
