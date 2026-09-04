@@ -21,7 +21,7 @@ function Result() {
   if (backendData?.silent) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-[#0a101d] text-white px-5">
-        <div className="text-center max-w-md rounded-[2rem] border border-white/10 bg-white/[0.06] p-10 backdrop-blur">
+        <div className="text-center max-w-md rounded-4xl border border-white/10 bg-white/6 p-10 backdrop-blur">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#3a7eea]/20">
             <svg className="h-8 w-8 text-[#82b5ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3z" />
@@ -43,7 +43,7 @@ function Result() {
   if (!backendData) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-[#0a101d] text-white px-5">
-        <div className="text-center max-w-md rounded-[2rem] border border-white/10 bg-white/[0.06] p-10 backdrop-blur">
+        <div className="text-center max-w-md rounded-4xl border border-white/10 bg-white/ p-10 backdrop-blur">
           <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-red-500/20">
             <AlertTriangle className="h-8 w-8 text-red-300" />
           </div>
@@ -113,7 +113,7 @@ function Result() {
           </motion.article>
         </div>
 
-        <motion.div {...animation} transition={{ duration: 0.6, delay: reduceMotion ? 0 : 0.48, ease: [0.22, 1, 0.36, 1] }} className="mt-7 flex flex-col items-start justify-between gap-4 rounded-2xl border border-[#efd8cd] bg-[#fff9f6] p-5 sm:flex-row sm:items-center"><div className="flex gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#fde9e2] text-[#cf604a]"><AlertTriangle className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#49342e]">Do not share codes, money, or sensitive details.</p><p className="mt-1 text-sm text-[#785f58]">Use a trusted contact method to verify who called you.</p></div></div><motion.button type="button" onClick={() => setFlagged(true)} whileHover={reduceMotion ? {} : { y: -2 }} whileTap={reduceMotion ? {} : { scale: 0.98 }} className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#c95745] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#ad4435]">Flag this sample<ChevronRight className="h-4 w-4" /></motion.button></motion.div>
+        <motion.div {...animation} transition={{ duration: 0.6, delay: reduceMotion ? 0 : 0.48, ease: [0.22, 1, 0.36, 1] }} className="mt-7 flex flex-col items-start justify-between gap-4 rounded-2xl border border-[#efd8cd] bg-[#fff9f6] p-5 sm:flex-row sm:items-center"><div className="flex gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#fde9e2] text-[#cf604a]"><AlertTriangle className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#49342e]">Do not share codes, money, or sensitive details.</p><p className="mt-1 text-sm text-[#785f58]">Use a trusted contact method to verify who called you.</p></div></div>{riskScore > 55 && (<motion.button type="button" onClick={() => setFlagged(true)} whileHover={reduceMotion ? {} : { y: -2 }} whileTap={reduceMotion ? {} : { scale: 0.98 }} className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#c95745] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#ad4435]">Flag this sample<ChevronRight className="h-4 w-4" /></motion.button>)}</motion.div>
         <div className="mt-6 flex justify-center">
           <button
             type="button"
