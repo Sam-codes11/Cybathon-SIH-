@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
   AudioLines,
@@ -41,6 +41,11 @@ function Analyzing() {
   const [isRecording, setIsRecording] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(RECORDING_DURATION)
   const [errorMessage, setErrorMessage] = useState("")
+  const websocketRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const processorRef = useRef(null)
+  const sourceRef = useRef(null)
+  const streamRef = useRef(null)
 
   const mode = location.state?.mode
   const incomingAudioBlob = location.state?.audioBlob
@@ -133,122 +138,295 @@ function Analyzing() {
         })
       }
     }
-
     const recordAudio = async () => {
       try {
-        setErrorMessage("")
-        setStage(0)
+    setErrorMessage("")
+    setStage(0)
 
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        })
+    const stream =
+      await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      })
 
-        if (cancelled) {
-          stream.getTracks().forEach((track) => track.stop())
-          return
-        }
-
-        let recorderOptions
-
-        if (
-          MediaRecorder.isTypeSupported(
-            "audio/webm;codecs=opus"
-          )
-        ) {
-          recorderOptions = {
-            mimeType: "audio/webm;codecs=opus",
-          }
-        }
-
-        recorder = new MediaRecorder(
-          stream,
-          recorderOptions
-        )
-
-        const chunks = []
-
-        recorder.ondataavailable = (event) => {
-          if (event.data && event.data.size > 0) {
-            chunks.push(event.data)
-          }
-        }
-
-        recorder.onerror = (event) => {
-          console.error("MediaRecorder error:", event)
-
-          setErrorMessage(
-            "There was a problem recording your microphone."
-          )
-        }
-
-        recorder.onstop = async () => {
-          if (countdownInterval) {
-            clearInterval(countdownInterval)
-          }
-
-          stream?.getTracks().forEach((track) => {
-            track.stop()
-          })
-
-          setIsRecording(false)
-
-          if (cancelled) return
-
-          const audioBlob = new Blob(chunks, {
-            type:
-              recorder.mimeType ||
-              "audio/webm",
-          })
-
-          await analyzeAudio(audioBlob)
-        }
-
-        setSecondsLeft(RECORDING_DURATION)
-        setIsRecording(true)
-
-        recorder.start()
-
-        countdownInterval = setInterval(() => {
-          setSecondsLeft((previous) => {
-            if (previous <= 1) {
-              clearInterval(countdownInterval)
-              return 0
-            }
-
-            return previous - 1
-          })
-        }, 1000)
-
-        stopTimeout = setTimeout(() => {
-          if (
-            recorder &&
-            recorder.state !== "inactive"
-          ) {
-            recorder.stop()
-          }
-        }, RECORDING_DURATION * 1000)
-      } catch (error) {
-        console.error("Microphone error:", error)
-
-        if (cancelled) return
-
-        setIsRecording(false)
-
-        if (
-          error?.name === "NotAllowedError" ||
-          error?.name === "PermissionDeniedError"
-        ) {
-          setErrorMessage(
-            "Microphone permission was denied. Allow microphone access and try again."
-          )
-        } else {
-          setErrorMessage(
-            "Your microphone could not be accessed."
-          )
-        }
-      }
+    if (cancelled) {
+      stream.getTracks().forEach((track) => track.stop())
+      return
     }
 
+    streamRef.current = stream
+
+    // Connect to live backend
+    const websocket = new WebSocket(
+      "ws://127.0.0.1:8000/audio-stream"
+    )
+
+    websocket.binaryType = "arraybuffer"
+    websocketRef.current = websocket
+
+    websocket.onopen = () => {
+      console.log("🎙️ Live detection connected")
+      setStage(1)
+    }
+
+   websocket.onmessage = (event) => {
+  try {
+    const data = JSON.parse(event.data)
+
+    console.log("LIVE BACKEND:", data)
+
+    if (data.type === "prediction") {
+      console.log(
+        "🧠 Live prediction:",
+        data.spoof_probability,
+        data.status
+      )
+
+      setStage(2)
+
+      // Show the result as soon as the backend
+      // finishes the first live analysis.
+      navigate("/result", {
+        replace: true,
+        state: {
+          result: {
+            max_spoof_probability:
+              data.spoof_probability,
+            status: data.status,
+          },
+        },
+      })
+
+      return
+    }
+
+    if (data.type === "error") {
+      console.error(
+        "Live prediction error:",
+        data.message
+      )
+    }
+  } catch (error) {
+    console.error(
+      "WebSocket message error:",
+      error
+    )
+  }
+}
+
+ 
+
+    websocket.onerror = (error) => {
+      console.error(
+        "WebSocket error:",
+        error
+      )
+
+      setErrorMessage(
+        "Live voice detection could not connect to the backend."
+      )
+    }
+
+    // Create browser audio context
+    const audioContext = new AudioContext()
+
+    audioContextRef.current = audioContext
+
+    await audioContext.resume()
+
+    console.log(
+      "🎧 Browser sample rate:",
+      audioContext.sampleRate
+    )
+
+    const source =
+      audioContext.createMediaStreamSource(stream)
+
+    sourceRef.current = source
+
+    const processor =
+      audioContext.createScriptProcessor(
+        4096,
+        1,
+        1
+      )
+
+    processorRef.current = processor
+
+    processor.onaudioprocess = (event) => {
+      if (
+        websocket.readyState !== WebSocket.OPEN
+      ) {
+        return
+      }
+
+      const input =
+        event.inputBuffer.getChannelData(0)
+
+      /*
+        IMPORTANT:
+
+        Your model expects 16 kHz.
+        Browsers often give us 48 kHz.
+
+        So we explicitly convert the
+        microphone data to 16 kHz.
+      */
+
+      const targetSampleRate = 16000
+      const inputSampleRate =
+        audioContext.sampleRate
+
+      const ratio =
+        inputSampleRate / targetSampleRate
+
+      const outputLength =
+        Math.floor(input.length / ratio)
+
+      const pcm =
+        new Int16Array(outputLength)
+
+      for (let i = 0; i < outputLength; i++) {
+        const position = i * ratio
+
+        const left = Math.floor(position)
+        const right = Math.min(
+          left + 1,
+          input.length - 1
+        )
+
+        const fraction =
+          position - left
+
+        const sample =
+          input[left] * (1 - fraction) +
+          input[right] * fraction
+
+        const clipped =
+          Math.max(
+            -1,
+            Math.min(1, sample)
+          )
+
+        pcm[i] =
+          clipped < 0
+            ? clipped * 32768
+            : clipped * 32767
+      }
+
+      websocket.send(
+        pcm.buffer
+      )
+    }
+
+    source.connect(processor)
+
+    /*
+      Keep ScriptProcessor alive without
+      playing the microphone back to you.
+    */
+    const silentGain =
+      audioContext.createGain()
+
+    silentGain.gain.value = 0
+
+    processor.connect(silentGain)
+    silentGain.connect(
+      audioContext.destination
+    )
+
+    console.log(
+      "🎤 LIVE MICROPHONE DETECTION STARTED"
+    )
+
+    // Keep your existing 7-second UI
+    setSecondsLeft(RECORDING_DURATION)
+    setIsRecording(true)
+
+    countdownInterval = setInterval(() => {
+      setSecondsLeft((previous) => {
+        if (previous <= 1) {
+          clearInterval(countdownInterval)
+          return 0
+        }
+
+        return previous - 1
+      })
+    }, 1000)
+
+    stopTimeout = setTimeout(() => {
+      console.log(
+        "🛑 7 seconds completed"
+      )
+
+      if (countdownInterval) {
+        clearInterval(countdownInterval)
+      }
+
+      if (processorRef.current) {
+        processorRef.current.disconnect()
+        processorRef.current = null
+      }
+
+      if (sourceRef.current) {
+        sourceRef.current.disconnect()
+        sourceRef.current = null
+      }
+
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
+        audioContextRef.current = null
+      }
+
+      if (streamRef.current) {
+        streamRef.current
+          .getTracks()
+          .forEach((track) => track.stop())
+
+        streamRef.current = null
+      }
+
+      if (
+        websocketRef.current &&
+        websocketRef.current.readyState ===
+          WebSocket.OPEN
+      ) {
+        websocketRef.current.close()
+      }
+
+      websocketRef.current = null
+
+      setIsRecording(false)
+    }, RECORDING_DURATION * 1000)
+
+  } catch (error) {
+    console.error(
+      "Microphone error:",
+      error
+    )
+
+    setIsRecording(false)
+
+    if (
+      error?.name === "NotAllowedError" ||
+      error?.name === "PermissionDeniedError"
+    ) {
+      setErrorMessage(
+        "Microphone permission was denied. Allow microphone access and try again."
+      )
+    } else {
+      setErrorMessage(
+        "Your microphone could not be accessed."
+      )
+    }
+  }
+}
+    
+      
     /*
       Delay execution until the page has mounted.
 
@@ -278,16 +456,33 @@ function Analyzing() {
         clearInterval(countdownInterval)
       }
 
-      if (
-        recorder &&
-        recorder.state !== "inactive"
-      ) {
-        recorder.stop()
-      }
+    if (processorRef.current) {
+  processorRef.current.disconnect()
+  processorRef.current = null
+}
 
-      stream?.getTracks().forEach((track) => {
-        track.stop()
-      })
+if (sourceRef.current) {
+  sourceRef.current.disconnect()
+  sourceRef.current = null
+}
+
+if (audioContextRef.current) {
+  audioContextRef.current.close()
+  audioContextRef.current = null
+}
+
+if (streamRef.current) {
+  streamRef.current
+    .getTracks()
+    .forEach((track) => track.stop())
+
+  streamRef.current = null
+}
+
+if (websocketRef.current) {
+  websocketRef.current.close()
+  websocketRef.current = null
+}
     }
   }, [
     mode,

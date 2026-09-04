@@ -1,7 +1,19 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from .audio_routes import router as audio_router
 
+import io
+import numpy as np
+import soundfile as sf
+
+from .prediction_service import predict_audio
+
+
 app = FastAPI()
+
+
+# ---------------------------------------------------------
+# CORS
+# ---------------------------------------------------------
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,16 +24,179 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ---------------------------------------------------------
+# Existing upload endpoint
+# ---------------------------------------------------------
+
 app.include_router(audio_router)
+
+
+# ---------------------------------------------------------
+# Real-time microphone WebSocket
+# ---------------------------------------------------------
 
 @app.websocket("/audio-stream")
 async def websocket_endpoint(websocket: WebSocket):
+
     await websocket.accept()
-    while True:
-        data = await websocket.receive_bytes()
-        # Process and handle audio streaming data here
-        await websocket.send_text("Audio chunk received")
+
+    print("🎙️ Live audio connection established")
+
+    audio_buffer = bytearray()
+
+    # 16 kHz, mono, 16-bit PCM
+    SAMPLE_RATE = 16000
+    BYTES_PER_SAMPLE = 2
+
+    # Analyze every ~4 seconds
+    WINDOW_SECONDS = 4
+
+    WINDOW_BYTES = (
+        SAMPLE_RATE
+        * WINDOW_SECONDS
+        * BYTES_PER_SAMPLE
+    )
+
+    try:
+
+        while True:
+
+            # Receive raw PCM bytes from browser
+            data = await websocket.receive_bytes()
+
+            audio_buffer.extend(data)
+
+            print(
+                f"Received {len(data)} bytes | "
+                f"Buffer: {len(audio_buffer)} bytes"
+            )
+
+            # -------------------------------------------------
+            # Once we have ~4 seconds, run inference
+            # -------------------------------------------------
+
+            while len(audio_buffer) >= WINDOW_BYTES:
+
+                # Take exactly 4 seconds
+                window_bytes = bytes(
+                    audio_buffer[:WINDOW_BYTES]
+                )
+
+                # Remove processed audio from buffer
+                del audio_buffer[:WINDOW_BYTES]
+
+                # -------------------------------------------------
+                # Convert PCM bytes → numpy audio
+                # -------------------------------------------------
+
+                audio = np.frombuffer(
+                    window_bytes,
+                    dtype=np.int16
+                ).astype(np.float32)
+
+                # Normalize int16 → [-1, 1]
+                audio = audio / 32768.0
+
+                # -------------------------------------------------
+                # Convert numpy → WAV in memory
+                # -------------------------------------------------
+
+                wav_buffer = io.BytesIO()
+
+                sf.write(
+                    wav_buffer,
+                    audio,
+                    SAMPLE_RATE,
+                    format="WAV",
+                    subtype="PCM_16"
+                )
+
+                wav_buffer.seek(0)
+
+                # -------------------------------------------------
+                # File-like object for prediction_service
+                # -------------------------------------------------
+
+                class StreamFile:
+
+                    def __init__(self, buffer):
+                        self.filename = "live_stream.wav"
+                        self.file = buffer
+
+                stream_file = StreamFile(wav_buffer)
+
+                # -------------------------------------------------
+                # Run existing model
+                # -------------------------------------------------
+
+                try:
+
+                    result = predict_audio(stream_file)
+
+                    # Extract information from existing result
+                    spoof_probability = result.get(
+                        "max_spoof_probability",
+                        0.0
+                    )
+
+                    if spoof_probability >= 0.80:
+                        status = "high_risk"
+
+                    elif spoof_probability >= 0.50:
+                        status = "suspicious"
+
+                    else:
+                        status = "likely_real"
+
+                    await websocket.send_json({
+                        "type": "prediction",
+                        "spoof_probability": spoof_probability,
+                        "status": status
+                    })
+
+                    print(
+                        f"🧠 Live prediction: "
+                        f"{spoof_probability:.4f} "
+                        f"→ {status}"
+                    )
+
+                except Exception as e:
+
+                    print(
+                        "Prediction error:",
+                        repr(e)
+                    )
+
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(e)
+                    })
+
+    except WebSocketDisconnect:
+
+        print("🎙️ Live audio connection closed")
+
+    except Exception as e:
+
+        print(
+            "WebSocket error:",
+            repr(e)
+        )
+
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+# ---------------------------------------------------------
+# Health check
+# ---------------------------------------------------------
 
 @app.get("/")
 def home():
-    return {"message": "Backend is running"}
+    return {
+        "message": "Voice Shield Backend is running",
+        "live_detection": True
+    }

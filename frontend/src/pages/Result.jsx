@@ -59,10 +59,19 @@ function Result() {
       </main>
     )
   }
+   
+  const spoofProbability =
+  backendData?.spoof_probability ??
+  backendData?.max_spoof_probability ??
+  0
 
-  const isReal = backendData?.result === "real"
-  const confidencePercent = Math.round((backendData?.confidence ?? 0) * 100)
-  const riskScore = isReal ? 100 - confidencePercent : confidencePercent
+  const isReal =
+  backendData?.status === "likely_real" ||
+  backendData?.result === "real"
+
+  const riskScore = Math.round(spoofProbability * 100)
+  const confidencePercent = 100 - riskScore
+ 
 
   const report = {
     risk: riskScore,
