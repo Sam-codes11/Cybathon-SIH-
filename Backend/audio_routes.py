@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File
-from .prediction_service import predict_audio
+from prediction_service import predict_audio
 from pydub import AudioSegment
 import tempfile
 import os

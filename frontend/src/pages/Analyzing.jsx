@@ -162,8 +162,8 @@ function Analyzing() {
 
     // Connect to live backend
     const websocket = new WebSocket(
-      "ws://127.0.0.1:8000/audio-stream"
-    )
+      `${window.location.origin.replace("http", "ws").replace(":5173", ":8000")}/audio-stream`
+    );
 
     websocket.binaryType = "arraybuffer"
     websocketRef.current = websocket

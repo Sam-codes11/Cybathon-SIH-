@@ -1,11 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from .audio_routes import router as audio_router
+from audio_routes import router as audio_router
 
 import io
 import numpy as np
 import soundfile as sf
 
-from .prediction_service import predict_audio
+from prediction_service import predict_audio
 
 
 app = FastAPI()
