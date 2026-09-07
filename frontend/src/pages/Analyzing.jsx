@@ -160,6 +160,53 @@ function Analyzing() {
 
     streamRef.current = stream
 
+// Temporary local recording for debugging/testing
+    const recordedChunks = []
+
+     try {
+      recorder = new MediaRecorder(stream)
+
+      recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      recordedChunks.push(event.data)
+    }
+  }
+
+  recorder.onstop = () => {
+    const recordedBlob = new Blob(recordedChunks, {
+      type: recorder.mimeType || "audio/webm",
+    })
+
+    const url = URL.createObjectURL(recordedBlob)
+    const link = document.createElement("a")
+
+    link.href = url
+    link.download = `voice_test_${Date.now()}.webm`
+
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+
+    setTimeout(() => {
+      URL.revokeObjectURL(url)
+    }, 1000)
+
+    console.log(
+      "💾 Test recording saved:",
+      recordedBlob.size,
+      "bytes"
+    )
+  }
+
+  recorder.start()
+  console.log("🎙️ Local test recording started")
+} catch (error) {
+  console.warn(
+    "Local recording could not be started:",
+    error
+  )
+}
+
     // Connect to live backend
     const websocket = new WebSocket(
       `${window.location.origin.replace("http", "ws").replace(":5173", ":8000")}/audio-stream`
@@ -359,9 +406,18 @@ function Analyzing() {
     }, 1000)
 
     stopTimeout = setTimeout(() => {
-      console.log(
-        "🛑 7 seconds completed"
-      )
+    console.log(
+    "🛑 7 seconds completed"
+  )
+
+      if (recorder && recorder.state !== "inactive") {
+    recorder.stop()
+    console.log("💾 Local test recording stopped")
+  }
+
+      if (countdownInterval) {
+    clearInterval(countdownInterval)
+  }
 
       if (countdownInterval) {
         clearInterval(countdownInterval)

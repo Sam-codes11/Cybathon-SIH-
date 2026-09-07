@@ -133,10 +133,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
 
                     result = predict_audio(stream_file)
+                    print("🔍 LIVE PREDICTION RESULT:", result)
 
                     # Extract information from existing result
                     spoof_probability = result.get(
-                        "max_spoof_probability",
+                        "spoof_probability",
                         0.0
                     )
 
