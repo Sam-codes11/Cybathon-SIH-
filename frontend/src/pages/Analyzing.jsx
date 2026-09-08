@@ -1,737 +1,238 @@
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import {
-  AudioLines,
-  Check,
-  Mic,
-  ScanLine,
-  ShieldCheck,
-} from "lucide-react"
+import { AudioLines, Check, Mic, ScanLine, ShieldCheck, Terminal } from "lucide-react"
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
 import Navbar from "../components/Navbar"
 import WaveformVerdict from "../components/WaveformVerdict"
-import { motion } from "framer-motion"
 import { WavyBackground } from "../components/WavyBackground"
 
-const RECORDING_DURATION = 7
+// Change this one value when the desired microphone capture duration changes.
+const RECORDING_DURATION = 10
 
 const checkSilence = async (blob) => {
-  const arrayBuffer = await blob.arrayBuffer()
-  const audioContext = new AudioContext()
-  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
-  const channelData = audioBuffer.getChannelData(0)
-
-  let sum = 0
-
-  for (let i = 0; i < channelData.length; i++) {
-    sum += channelData[i] * channelData[i]
+  const context = new AudioContext()
+  try {
+    const audio = await context.decodeAudioData(await blob.arrayBuffer())
+    const samples = audio.getChannelData(0)
+    const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length)
+    return rms < 0.01
+  } finally {
+    await context.close()
   }
+}
 
-  const rms = Math.sqrt(sum / channelData.length)
+const getWebSocketUrl = () => {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+  return `${protocol}//${window.location.hostname}:8000/audio-stream`
+}
 
-  await audioContext.close()
+const normaliseReport = (data, fallbackSeconds) => {
+  const spoofProbability = Number(data.spoof_probability ?? data.max_spoof_probability ?? 0)
+  const isSpoof = data.result ? data.result === "spoof" : spoofProbability >= 0.5
+  const confidence = Number(data.confidence ?? (isSpoof ? spoofProbability : 1 - spoofProbability))
+  const risk = data.risk ?? (spoofProbability >= 0.8 ? "HIGH" : spoofProbability >= 0.5 ? "MEDIUM" : "LOW")
 
-  return rms < 0.01
+  return {
+    ...data,
+    spoof_probability: spoofProbability,
+    confidence,
+    risk,
+    result: isSpoof ? "spoof" : "real",
+    elapsed_seconds: data.elapsed_seconds ?? fallbackSeconds,
+  }
 }
 
 function Analyzing() {
   const navigate = useNavigate()
   const location = useLocation()
-
+  const reduceMotion = useReducedMotion()
   const [stage, setStage] = useState(0)
   const [isRecording, setIsRecording] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(RECORDING_DURATION)
   const [errorMessage, setErrorMessage] = useState("")
-  const websocketRef = useRef(null)
+  const [reports, setReports] = useState([])
+  const [liveReport, setLiveReport] = useState(null)
+  const socketRef = useRef(null)
   const audioContextRef = useRef(null)
   const processorRef = useRef(null)
   const sourceRef = useRef(null)
   const streamRef = useRef(null)
+  const latestReportRef = useRef(null)
+  const consoleRef = useRef(null)
 
   const mode = location.state?.mode
   const incomingAudioBlob = location.state?.audioBlob
-
-  const prefersReducedMotion =
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-
-  const stages = [
-    "Preparing audio",
-    "Reading voice markers",
-    "Checking attack patterns",
-  ]
+  const stages = ["Preparing audio", "Reading voice markers", "Checking attack patterns"]
 
   useEffect(() => {
-    let stream = null
-    let recorder = null
-    let countdownInterval = null
-    let stopTimeout = null
-    let startTimeout = null
+    if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight
+  }, [reports])
+
+  useEffect(() => {
     let cancelled = false
+    let countdownId
+    let stopId
+    let finishId
+    let recorder
 
-    const analyzeAudio = async (audioBlob) => {
+    const disposeAudio = () => {
+      processorRef.current?.disconnect()
+      sourceRef.current?.disconnect()
+      if (audioContextRef.current?.state !== "closed") audioContextRef.current?.close()
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      processorRef.current = null
+      sourceRef.current = null
+      audioContextRef.current = null
+      streamRef.current = null
+    }
+
+    const finish = () => {
       if (cancelled) return
-
+      socketRef.current?.close()
+      socketRef.current = null
       setIsRecording(false)
-      setStage(1)
-
-      if (audioBlob) {
-        try {
-          const isSilent = await checkSilence(audioBlob)
-
-          if (cancelled) return
-
-          if (isSilent) {
-            navigate("/result", {
-              replace: true,
-              state: {
-                result: {
-                  silent: true,
-                },
-              },
-            })
-
-            return
-          }
-        } catch (error) {
-          console.warn("Silence check failed:", error)
-        }
-      }
-
-      const formData = new FormData()
-
-      if (audioBlob) {
-        formData.append("file", audioBlob, "recording.webm")
-      }
-
       setStage(2)
+      navigate("/result", { replace: true, state: { result: latestReportRef.current } })
+    }
 
+    const analyseUpload = async (blob) => {
+      if (!blob) return
+      setStage(1)
       try {
-        const response = await fetch("http://127.0.0.1:8000/analyze", {
-          method: "POST",
-          body: formData,
-        })
-
-        if (!response.ok) {
-          throw new Error(`Backend returned ${response.status}`)
+        if (await checkSilence(blob)) {
+          navigate("/result", { replace: true, state: { result: { silent: true } } })
+          return
         }
-
-        const data = await response.json()
-
-        if (cancelled) return
-
-        navigate("/result", {
-          replace: true,
-          state: {
-            result: data,
-          },
-        })
+        setStage(2)
+        const formData = new FormData()
+        formData.append("file", blob, blob.name || "recording.webm")
+        const response = await fetch("http://127.0.0.1:8000/analyze", { method: "POST", body: formData })
+        if (!response.ok) throw new Error(`Backend returned ${response.status}`)
+        const result = await response.json()
+        if (!cancelled) navigate("/result", { replace: true, state: { result } })
       } catch (error) {
-        console.error("Backend error:", error)
-
-        if (cancelled) return
-
-        navigate("/result", {
-          replace: true,
-          state: {
-            result: null,
-          },
-        })
+        console.error("Upload analysis error:", error)
+        if (!cancelled) navigate("/result", { replace: true, state: { result: null } })
       }
     }
-    const recordAudio = async () => {
+
+    const startRecording = async () => {
       try {
-    setErrorMessage("")
-    setStage(0)
-
-    const stream =
-      await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      })
-
-    if (cancelled) {
-      stream.getTracks().forEach((track) => track.stop())
-      return
-    }
-
-    streamRef.current = stream
-
-// Temporary local recording for debugging/testing
-    const recordedChunks = []
-
-     try {
-      recorder = new MediaRecorder(stream)
-
-      recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) {
-      recordedChunks.push(event.data)
-    }
-  }
-
-  recorder.onstop = () => {
-    const recordedBlob = new Blob(recordedChunks, {
-      type: recorder.mimeType || "audio/webm",
-    })
-
-    const url = URL.createObjectURL(recordedBlob)
-    const link = document.createElement("a")
-
-    link.href = url
-    link.download = `voice_test_${Date.now()}.webm`
-
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-
-    setTimeout(() => {
-      URL.revokeObjectURL(url)
-    }, 1000)
-
-    console.log(
-      "💾 Test recording saved:",
-      recordedBlob.size,
-      "bytes"
-    )
-  }
-
-  recorder.start()
-  console.log("🎙️ Local test recording started")
-} catch (error) {
-  console.warn(
-    "Local recording could not be started:",
-    error
-  )
-}
-
-    // Connect to live backend
-    const websocket = new WebSocket(
-      `${window.location.origin.replace("http", "ws").replace(":5173", ":8000")}/audio-stream`
-    );
-
-    websocket.binaryType = "arraybuffer"
-    websocketRef.current = websocket
-
-    websocket.onopen = () => {
-      console.log("🎙️ Live detection connected")
-      setStage(1)
-    }
-
-   websocket.onmessage = (event) => {
-  try {
-    const data = JSON.parse(event.data)
-
-    console.log("LIVE BACKEND:", data)
-
-    if (data.type === "prediction") {
-      console.log(
-        "🧠 Live prediction:",
-        data.spoof_probability,
-        data.status
-      )
-
-      setStage(2)
-
-      // Show the result as soon as the backend
-      // finishes the first live analysis.
-      navigate("/result", {
-        replace: true,
-        state: {
-          result: {
-            max_spoof_probability:
-              data.spoof_probability,
-            status: data.status,
-          },
-        },
-      })
-
-      return
-    }
-
-    if (data.type === "error") {
-      console.error(
-        "Live prediction error:",
-        data.message
-      )
-    }
-  } catch (error) {
-    console.error(
-      "WebSocket message error:",
-      error
-    )
-  }
-}
-
- 
-
-    websocket.onerror = (error) => {
-      console.error(
-        "WebSocket error:",
-        error
-      )
-
-      setErrorMessage(
-        "Live voice detection could not connect to the backend."
-      )
-    }
-
-    // Create browser audio context
-    const audioContext = new AudioContext()
-
-    audioContextRef.current = audioContext
-
-    await audioContext.resume()
-
-    console.log(
-      "🎧 Browser sample rate:",
-      audioContext.sampleRate
-    )
-
-    const source =
-      audioContext.createMediaStreamSource(stream)
-
-    sourceRef.current = source
-
-    const processor =
-      audioContext.createScriptProcessor(
-        4096,
-        1,
-        1
-      )
-
-    processorRef.current = processor
-
-    processor.onaudioprocess = (event) => {
-      if (
-        websocket.readyState !== WebSocket.OPEN
-      ) {
-        return
-      }
-
-      const input =
-        event.inputBuffer.getChannelData(0)
-
-      /*
-        IMPORTANT:
-
-        Your model expects 16 kHz.
-        Browsers often give us 48 kHz.
-
-        So we explicitly convert the
-        microphone data to 16 kHz.
-      */
-
-      const targetSampleRate = 16000
-      const inputSampleRate =
-        audioContext.sampleRate
-
-      const ratio =
-        inputSampleRate / targetSampleRate
-
-      const outputLength =
-        Math.floor(input.length / ratio)
-
-      const pcm =
-        new Int16Array(outputLength)
-
-      for (let i = 0; i < outputLength; i++) {
-        const position = i * ratio
-
-        const left = Math.floor(position)
-        const right = Math.min(
-          left + 1,
-          input.length - 1
-        )
-
-        const fraction =
-          position - left
-
-        const sample =
-          input[left] * (1 - fraction) +
-          input[right] * fraction
-
-        const clipped =
-          Math.max(
-            -1,
-            Math.min(1, sample)
-          )
-
-        pcm[i] =
-          clipped < 0
-            ? clipped * 32768
-            : clipped * 32767
-      }
-
-      websocket.send(
-        pcm.buffer
-      )
-    }
-
-    source.connect(processor)
-
-    /*
-      Keep ScriptProcessor alive without
-      playing the microphone back to you.
-    */
-    const silentGain =
-      audioContext.createGain()
-
-    silentGain.gain.value = 0
-
-    processor.connect(silentGain)
-    silentGain.connect(
-      audioContext.destination
-    )
-
-    console.log(
-      "🎤 LIVE MICROPHONE DETECTION STARTED"
-    )
-
-    // Keep your existing 7-second UI
-    setSecondsLeft(RECORDING_DURATION)
-    setIsRecording(true)
-
-    countdownInterval = setInterval(() => {
-      setSecondsLeft((previous) => {
-        if (previous <= 1) {
-          clearInterval(countdownInterval)
-          return 0
+        setErrorMessage("")
+        setStage(0)
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        })
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
         }
+        streamRef.current = stream
+        recorder = new MediaRecorder(stream)
+        recorder.start()
 
-        return previous - 1
-      })
-    }, 1000)
+        const socket = new WebSocket(getWebSocketUrl())
+        socket.binaryType = "arraybuffer"
+        socketRef.current = socket
+        socket.onopen = () => setStage(1)
+        socket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            if (data.type === "error") throw new Error(data.message)
+            if (data.type !== "prediction" || cancelled) return
+            const report = normaliseReport(data, (latestReportRef.current?.elapsed_seconds ?? 0) + 2)
+            latestReportRef.current = report
+            setLiveReport(report)
+            setReports((current) => [...current, report])
+            setStage(2)
+          } catch (error) {
+            console.error("Live prediction error:", error)
+          }
+        }
+        socket.onerror = () => setErrorMessage("Live voice detection could not connect to the backend.")
 
-    stopTimeout = setTimeout(() => {
-    console.log(
-    "🛑 7 seconds completed"
-  )
+        const context = new AudioContext()
+        audioContextRef.current = context
+        await context.resume()
+        const source = context.createMediaStreamSource(stream)
+        sourceRef.current = source
+        const processor = context.createScriptProcessor(4096, 1, 1)
+        processorRef.current = processor
+        processor.onaudioprocess = (event) => {
+          if (socket.readyState !== WebSocket.OPEN) return
+          const input = event.inputBuffer.getChannelData(0)
+          const ratio = context.sampleRate / 16000
+          const pcm = new Int16Array(Math.floor(input.length / ratio))
+          for (let index = 0; index < pcm.length; index += 1) {
+            const position = index * ratio
+            const left = Math.floor(position)
+            const right = Math.min(left + 1, input.length - 1)
+            const sample = input[left] * (1 - (position - left)) + input[right] * (position - left)
+            const clipped = Math.max(-1, Math.min(1, sample))
+            pcm[index] = clipped < 0 ? clipped * 32768 : clipped * 32767
+          }
+          socket.send(pcm.buffer)
+        }
+        const silentGain = context.createGain()
+        silentGain.gain.value = 0
+        source.connect(processor)
+        processor.connect(silentGain)
+        silentGain.connect(context.destination)
 
-      if (recorder && recorder.state !== "inactive") {
-    recorder.stop()
-    console.log("💾 Local test recording stopped")
-  }
-
-      if (countdownInterval) {
-    clearInterval(countdownInterval)
-  }
-
-      if (countdownInterval) {
-        clearInterval(countdownInterval)
+        setSecondsLeft(RECORDING_DURATION)
+        setIsRecording(true)
+        countdownId = window.setInterval(() => setSecondsLeft((current) => Math.max(0, current - 1)), 1000)
+        stopId = window.setTimeout(() => {
+          window.clearInterval(countdownId)
+          if (recorder?.state !== "inactive") recorder.stop()
+          disposeAudio()
+          // Let the last two-second model window return before opening the final report.
+          finishId = window.setTimeout(finish, 900)
+        }, RECORDING_DURATION * 1000)
+      } catch (error) {
+        console.error("Microphone error:", error)
+        setErrorMessage(error?.name === "NotAllowedError" ? "Microphone permission was denied. Allow microphone access and try again." : "Your microphone could not be accessed.")
       }
-
-      if (processorRef.current) {
-        processorRef.current.disconnect()
-        processorRef.current = null
-      }
-
-      if (sourceRef.current) {
-        sourceRef.current.disconnect()
-        sourceRef.current = null
-      }
-
-      if (audioContextRef.current) {
-        audioContextRef.current.close()
-        audioContextRef.current = null
-      }
-
-      if (streamRef.current) {
-        streamRef.current
-          .getTracks()
-          .forEach((track) => track.stop())
-
-        streamRef.current = null
-      }
-
-      if (
-        websocketRef.current &&
-        websocketRef.current.readyState ===
-          WebSocket.OPEN
-      ) {
-        websocketRef.current.close()
-      }
-
-      websocketRef.current = null
-
-      setIsRecording(false)
-    }, RECORDING_DURATION * 1000)
-
-  } catch (error) {
-    console.error(
-      "Microphone error:",
-      error
-    )
-
-    setIsRecording(false)
-
-    if (
-      error?.name === "NotAllowedError" ||
-      error?.name === "PermissionDeniedError"
-    ) {
-      setErrorMessage(
-        "Microphone permission was denied. Allow microphone access and try again."
-      )
-    } else {
-      setErrorMessage(
-        "Your microphone could not be accessed."
-      )
     }
-  }
-}
-    
-      
-    /*
-      Delay execution until the page has mounted.
 
-      This also prevents React StrictMode in development
-      from starting the microphone twice.
-    */
-    startTimeout = setTimeout(() => {
-      if (mode === "record") {
-        recordAudio()
-      } else {
-        analyzeAudio(incomingAudioBlob)
-      }
-    }, 0)
+    if (mode === "record") startRecording()
+    else analyseUpload(incomingAudioBlob)
 
     return () => {
       cancelled = true
-
-      if (startTimeout) {
-        clearTimeout(startTimeout)
-      }
-
-      if (stopTimeout) {
-        clearTimeout(stopTimeout)
-      }
-
-      if (countdownInterval) {
-        clearInterval(countdownInterval)
-      }
-
-    if (processorRef.current) {
-  processorRef.current.disconnect()
-  processorRef.current = null
-}
-
-if (sourceRef.current) {
-  sourceRef.current.disconnect()
-  sourceRef.current = null
-}
-
-if (audioContextRef.current) {
-  audioContextRef.current.close()
-  audioContextRef.current = null
-}
-
-if (streamRef.current) {
-  streamRef.current
-    .getTracks()
-    .forEach((track) => track.stop())
-
-  streamRef.current = null
-}
-
-if (websocketRef.current) {
-  websocketRef.current.close()
-  websocketRef.current = null
-}
+      window.clearInterval(countdownId)
+      window.clearTimeout(stopId)
+      window.clearTimeout(finishId)
+      if (recorder?.state === "recording") recorder.stop()
+      disposeAudio()
+      socketRef.current?.close()
+      socketRef.current = null
     }
-  }, [
-    mode,
-    incomingAudioBlob,
-    navigate,
-  ])
+  }, [incomingAudioBlob, mode, navigate])
+
+  const reportValue = (value) => `${Math.round(value * 100)}%`
 
   return (
     <main className="min-h-screen bg-[#101b2f] text-white">
-      <WavyBackground
-        backgroundFill="#101b2f"
-        waveOpacity={0.48}
-        colors={[
-          "#22d3ee",
-          "#38bdf8",
-          "#60a5fa",
-          "#818cf8",
-          "#a78bfa",
-        ]}
-      >
+      <WavyBackground backgroundFill="#101b2f" waveOpacity={0.48} colors={["#22d3ee", "#38bdf8", "#60a5fa", "#818cf8", "#a78bfa"]}>
         <Navbar />
-
-        <motion.section
-          initial={
-            prefersReducedMotion
-              ? false
-              : { opacity: 0, y: 8 }
-          }
-          animate={
-            prefersReducedMotion
-              ? false
-              : { opacity: 1, y: 0 }
-          }
-          transition={{
-            duration: 0.4,
-            ease: "easeOut",
-          }}
-          className="mx-auto flex min-h-[calc(100vh-73px)] w-full max-w-2xl flex-col items-center justify-center px-5 py-16 text-center sm:px-8"
-        >
-          <motion.div
-            initial={
-              prefersReducedMotion
-                ? false
-                : {
-                    scale: 0.9,
-                    opacity: 0,
-                  }
-            }
-            animate={
-              prefersReducedMotion
-                ? false
-                : {
-                    scale: 1,
-                    opacity: 1,
-                  }
-            }
-            transition={{ duration: 0.5 }}
-            className="w-full rounded-4xl border border-white/10 bg-white/6 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.24)] backdrop-blur sm:p-9"
-          >
-            <div className="flex items-center justify-between text-left">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#83b7ff]">
-                  {isRecording
-                    ? "Recording voice sample"
-                    : "Analysis in progress"}
-                </p>
-
-                <h1 className="mt-2 font-display text-2xl font-semibold">
-                  {isRecording
-                    ? `Speak naturally — ${secondsLeft}s remaining`
-                    : "Reading your voice sample"}
-                </h1>
-              </div>
-
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#3a7eea]/20 text-[#82b5ff]">
-                {isRecording ? (
-                  <Mic className="h-5 w-5 animate-pulse" />
-                ) : (
-                  <AudioLines className="h-5 w-5" />
-                )}
-              </span>
-            </div>
-
-            <div className="orb-stage mt-7">
-              <div
-                className="signal-orb"
-                aria-hidden="true"
-              >
-                <span />
-                <span />
-                <span />
-              </div>
-
-              <p className="relative z-10 text-sm font-medium text-[#d7e5ff]">
-                {isRecording
-                  ? "Listening to your voice..."
-                  : "Extracting voice markers"}
-              </p>
-
-              <p className="relative z-10 mt-1 text-xs text-[#8291aa]">
-                {isRecording
-                  ? "Keep speaking until the recording finishes"
-                  : "Checking your sample for synthetic voice patterns"}
-              </p>
-            </div>
-
-            <div className="mt-4 rounded-xl border border-white/10 bg-[#091324] px-3 py-3">
-              <WaveformVerdict
-                variant="uncertain"
-                state="analyzing"
-                size="sparkline"
-              />
-            </div>
-
-            {errorMessage && (
-              <div className="mt-5 rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">
-                <p>{errorMessage}</p>
-
-                <button
-                  type="button"
-                  onClick={() => navigate("/")}
-                  className="mt-3 rounded-lg bg-white/10 px-4 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
-                >
-                  Go back and try again
-                </button>
-              </div>
-            )}
-
-            <div className="mt-5 flex items-center justify-between rounded-xl bg-white/6 px-4 py-3 text-left">
-              <span className="truncate text-sm text-slate-300">
-                {location.state?.source ??
-                  "Voice sample"}
-              </span>
-
-              <span className="ml-4 shrink-0 text-xs font-medium text-[#8bc8ba]">
-                {isRecording
-                  ? "recording"
-                  : "secured"}
-              </span>
-            </div>
-
-            <div className="mt-8 space-y-3 text-left">
-              {stages.map(
-                (item, index) => (
-                  <div
-                    key={item}
-                    className={`flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${
-                      index === stage
-                        ? "bg-[#3a7eea]/15"
-                        : ""
-                    }`}
-                  >
-                    <span
-                      className={`flex h-6 w-6 items-center justify-center rounded-full ${
-                        index < stage
-                          ? "bg-[#37a68f] text-white"
-                          : index === stage
-                            ? "bg-[#4e8cf2] text-white"
-                            : "bg-white/10 text-slate-500"
-                      }`}
-                    >
-                      {index < stage ? (
-                        <Check className="h-3.5 w-3.5" />
-                      ) : (
-                        <ScanLine
-                          className={`h-3.5 w-3.5 ${
-                            index === stage
-                              ? "animate-pulse"
-                              : ""
-                          }`}
-                        />
-                      )}
-                    </span>
-
-                    <span
-                      className={`text-sm ${
-                        index <= stage
-                          ? "text-white"
-                          : "text-slate-500"
-                      }`}
-                    >
-                      {item}
-                    </span>
-                  </div>
-                )
-              )}
-            </div>
-
-            <div className="mt-7 flex items-center justify-center gap-2 text-xs text-slate-400">
-              <ShieldCheck className="h-4 w-4 text-[#8bc8ba]" />
-              No audio is stored after this session.
-            </div>
+        <motion.section initial={reduceMotion ? false : { opacity: 0, y: 10 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.45 }} className="mx-auto grid min-h-[calc(100vh-73px)] w-full max-w-6xl items-center gap-5 px-5 py-10 lg:grid-cols-[1.05fr_0.95fr] sm:px-8">
+          <motion.div initial={reduceMotion ? false : { scale: 0.97, opacity: 0 }} animate={reduceMotion ? false : { scale: 1, opacity: 1 }} transition={{ duration: 0.5 }} className="rounded-4xl border border-white/10 bg-white/6 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.24)] backdrop-blur sm:p-8">
+            <div className="flex items-center justify-between text-left"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#83b7ff]">{isRecording ? "Recording voice sample" : "Analysis in progress"}</p><h1 className="mt-2 font-display text-2xl font-semibold">{isRecording ? `Speak naturally — ${secondsLeft}s remaining` : "Reading your voice sample"}</h1></div><span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#3a7eea]/20 text-[#82b5ff]">{isRecording ? <Mic className="h-5 w-5 animate-pulse" /> : <AudioLines className="h-5 w-5" />}</span></div>
+            <div className="orb-stage mt-7"><div className="signal-orb" aria-hidden="true"><span /><span /><span /></div><p className="relative z-10 text-sm font-medium text-[#d7e5ff]">{isRecording ? "Listening to your voice..." : "Extracting voice markers"}</p><p className="relative z-10 mt-1 text-xs text-[#8291aa]">{isRecording ? "Live model updates appear beside your recording" : "Checking your sample for synthetic voice patterns"}</p></div>
+            <div className="mt-4 rounded-xl border border-white/10 bg-[#091324] px-3 py-3"><WaveformVerdict variant="uncertain" state="analyzing" size="sparkline" /></div>
+            {errorMessage && <div className="mt-5 rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">{errorMessage}</div>}
+            <div className="mt-5 flex items-center justify-between rounded-xl bg-white/6 px-4 py-3 text-left"><span className="truncate text-sm text-slate-300">{location.state?.source ?? "Voice sample"}</span><span className="ml-4 shrink-0 text-xs font-medium text-[#8bc8ba]">{isRecording ? "recording" : "secured"}</span></div>
+            <div className="mt-6 space-y-2 text-left">{stages.map((item, index) => <div key={item} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${index === stage ? "bg-[#3a7eea]/15" : ""}`}><span className={`flex h-6 w-6 items-center justify-center rounded-full ${index < stage ? "bg-[#37a68f] text-white" : index === stage ? "bg-[#4e8cf2] text-white" : "bg-white/10 text-slate-500"}`}>{index < stage ? <Check className="h-3.5 w-3.5" /> : <ScanLine className={`h-3.5 w-3.5 ${index === stage ? "animate-pulse" : ""}`} />}</span><span className={`text-sm ${index <= stage ? "text-white" : "text-slate-500"}`}>{item}</span></div>)}</div>
+            <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400"><ShieldCheck className="h-4 w-4 text-[#8bc8ba]" />No audio is stored after this session.</div>
           </motion.div>
+
+          <motion.aside initial={reduceMotion ? false : { opacity: 0, x: 14 }} animate={reduceMotion ? false : { opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: reduceMotion ? 0 : 0.12 }} className="overflow-hidden rounded-4xl border border-[#75a9ff]/20 bg-[#07101d]/90 shadow-[0_30px_80px_rgba(0,0,0,0.28)] backdrop-blur">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4"><div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#a9caff]"><Terminal className="h-4 w-4" />Live model console</div><span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-[#77e4c0]"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#50d3a8]" />STREAMING</span></div>
+            <div className="grid grid-cols-3 gap-px border-b border-white/10 bg-white/10">{[["Spoof", liveReport ? reportValue(liveReport.spoof_probability) : "--"], ["Confidence", liveReport ? reportValue(liveReport.confidence) : "--"], ["Risk", liveReport?.risk ?? "--"]].map(([label, value]) => <div key={label} className="bg-[#0a1525] px-4 py-4"><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-[#7185a7]">{label}</p><p className="mt-1 font-mono text-lg font-semibold text-[#deebff]">{value}</p></div>)}</div>
+            <div ref={consoleRef} className="h-76 overflow-y-auto p-4 font-mono text-xs leading-6 sm:h-88"><p className="text-[#6d84a7]">$ voice-shield --live --window 2s</p><p className="text-[#6d84a7]">Waiting for model windows…</p><AnimatePresence initial={false}>{reports.map((report, index) => <motion.div key={`${report.elapsed_seconds}-${index}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 rounded-lg border border-white/8 bg-white/[0.035] px-3 py-2"><span className="text-[#79e0be]">[{String(report.elapsed_seconds).padStart(2, "0")}s]</span><span className="ml-2 text-[#7db6ff]">SPOOF {reportValue(report.spoof_probability)}</span><span className="ml-2 text-[#c3b5ff]">CONF {reportValue(report.confidence)}</span><span className={`ml-2 ${report.risk === "HIGH" ? "text-[#ff9d8c]" : report.risk === "MEDIUM" ? "text-[#ffd17a]" : "text-[#79e0be]"}`}>{report.risk} RISK</span></motion.div>)}</AnimatePresence>{reports.length === 0 && <p className="mt-4 text-[#879ab8]">Capturing speech before the first analysis window.</p>}</div>
+            <div className="border-t border-white/10 px-5 py-3 text-[11px] text-[#7890af]">A fresh backend report is added every 2 seconds during capture.</div>
+          </motion.aside>
         </motion.section>
       </WavyBackground>
     </main>

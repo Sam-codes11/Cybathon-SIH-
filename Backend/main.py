@@ -49,8 +49,9 @@ async def websocket_endpoint(websocket: WebSocket):
     SAMPLE_RATE = 16000
     BYTES_PER_SAMPLE = 2
 
-    # Analyze every ~4 seconds
-    WINDOW_SECONDS = 4
+    # Analyze each two-second window so the frontend can show a live report.
+    WINDOW_SECONDS = 2
+    analysis_count = 0
 
     WINDOW_BYTES = (
         SAMPLE_RATE
@@ -143,17 +144,34 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     if spoof_probability >= 0.80:
                         status = "high_risk"
-
+                        risk = "HIGH"
                     elif spoof_probability >= 0.50:
                         status = "suspicious"
-
+                        risk = "MEDIUM"
                     else:
                         status = "likely_real"
+                        risk = "LOW"
+
+                    result_label = (
+                        "spoof"
+                        if spoof_probability >= 0.50
+                        else "real"
+                    )
+                    confidence = (
+                        spoof_probability
+                        if result_label == "spoof"
+                        else 1.0 - spoof_probability
+                    )
+                    analysis_count += 1
 
                     await websocket.send_json({
                         "type": "prediction",
-                        "spoof_probability": spoof_probability,
-                        "status": status
+                        "spoof_probability": round(spoof_probability, 4),
+                        "confidence": round(confidence, 4),
+                        "risk": risk,
+                        "result": result_label,
+                        "status": status,
+                        "elapsed_seconds": analysis_count * WINDOW_SECONDS,
                     })
 
                     print(
