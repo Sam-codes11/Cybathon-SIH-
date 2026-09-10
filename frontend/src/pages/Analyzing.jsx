@@ -178,7 +178,7 @@ function Analyzing() {
             const data = JSON.parse(event.data)
             if (data.type === "error") throw new Error(data.message)
             if (data.type !== "prediction" || cancelled) return
-            const report = normaliseReport(data, (latestReportRef.current?.elapsed_seconds ?? 0) + 4)
+            const report = normaliseReport(data, (latestReportRef.current?.elapsed_seconds ?? 0) + 2)
             latestReportRef.current = report
             reportsRef.current = [...reportsRef.current, report]
             setLiveReport(report)
@@ -225,7 +225,8 @@ function Analyzing() {
           window.clearInterval(countdownId)
           if (recorder?.state !== "inactive") recorder.stop()
           disposeAudio()
-          // Let the last four-second model window return before opening the final report.
+          // Let the last two-second model window return before opening the
+          //  final report.
           finishId = window.setTimeout(finish, 900)
         }, RECORDING_DURATION * 1000)
       } catch (error) {
@@ -269,8 +270,8 @@ function Analyzing() {
           <motion.aside initial={reduceMotion ? false : { opacity: 0, x: 14 }} animate={reduceMotion ? false : { opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: reduceMotion ? 0 : 0.12 }} className="overflow-hidden rounded-4xl border border-[#75a9ff]/20 bg-[#07101d]/90 shadow-[0_30px_80px_rgba(0,0,0,0.28)] backdrop-blur">
             <div className="flex items-center justify-between border-b border-white/10 px-5 py-4"><div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#a9caff]"><Terminal className="h-4 w-4" />Live model console</div><span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-[#77e4c0]"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#50d3a8]" />STREAMING</span></div>
             <div className="grid grid-cols-3 gap-px border-b border-white/10 bg-white/10">{[["Spoof", liveReport ? reportValue(liveReport.spoof_probability) : "--"], ["Confidence", liveReport ? reportValue(liveReport.confidence) : "--"], ["Risk", liveReport?.risk ?? "--"]].map(([label, value]) => <div key={label} className="bg-[#0a1525] px-4 py-4"><p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-[#7185a7]">{label}</p><p className="mt-1 font-mono text-lg font-semibold text-[#deebff]">{value}</p></div>)}</div>
-            <div ref={consoleRef} className="h-76 overflow-y-auto p-4 font-mono text-xs leading-6 sm:h-88"><p className="text-[#6d84a7]">$ voice-shield --live --window 4s</p><p className="text-[#6d84a7]">Waiting for model windows…</p><AnimatePresence initial={false}>{reports.map((report, index) => <motion.div key={`${report.elapsed_seconds}-${index}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 rounded-lg border border-white/8 bg-white/[0.035] px-3 py-2"><span className="text-[#79e0be]">[{String(report.elapsed_seconds).padStart(2, "0")}s]</span><span className="ml-2 text-[#7db6ff]">SPOOF {reportValue(report.spoof_probability)}</span><span className="ml-2 text-[#c3b5ff]">CONF {reportValue(report.confidence)}</span><span className={`ml-2 ${report.risk === "HIGH" ? "text-[#ff9d8c]" : report.risk === "MEDIUM" ? "text-[#ffd17a]" : "text-[#79e0be]"}`}>{report.risk} RISK</span></motion.div>)}</AnimatePresence>{reports.length === 0 && <p className="mt-4 text-[#879ab8]">Capturing speech before the first analysis window.</p>}</div>
-            <div className="border-t border-white/10 px-5 py-3 text-[11px] text-[#7890af]">A fresh backend report is added every 4 seconds during capture.</div>
+            <div ref={consoleRef} className="h-76 overflow-y-auto p-4 font-mono text-xs leading-6 sm:h-88"><p className="text-[#6d84a7]">$ voice-shield --live --window 2s</p><p className="text-[#6d84a7]">Waiting for model windows…</p><AnimatePresence initial={false}>{reports.map((report, index) => <motion.div key={`${report.elapsed_seconds}-${index}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 rounded-lg border border-white/8 bg-white/[0.035] px-3 py-2"><span className="text-[#79e0be]">[{String(report.elapsed_seconds).padStart(2, "0")}s]</span><span className="ml-2 text-[#7db6ff]">SPOOF {reportValue(report.spoof_probability)}</span><span className="ml-2 text-[#c3b5ff]">CONF {reportValue(report.confidence)}</span><span className={`ml-2 ${report.risk === "HIGH" ? "text-[#ff9d8c]" : report.risk === "MEDIUM" ? "text-[#ffd17a]" : "text-[#79e0be]"}`}>{report.risk} RISK</span></motion.div>)}</AnimatePresence>{reports.length === 0 && <p className="mt-4 text-[#879ab8]">Capturing speech before the first analysis window.</p>}</div>
+            <div className="border-t border-white/10 px-5 py-3 text-[11px] text-[#7890af]">A fresh backend report is added every 2 seconds during capture.</div>
           </motion.aside>
         </motion.section>
       </WavyBackground>
