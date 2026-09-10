@@ -58,6 +58,7 @@ function Analyzing() {
   const sourceRef = useRef(null)
   const streamRef = useRef(null)
   const latestReportRef = useRef(null)
+  const reportsRef = useRef([])
   const consoleRef = useRef(null)
 
   const mode = location.state?.mode
@@ -92,7 +93,43 @@ function Analyzing() {
       socketRef.current = null
       setIsRecording(false)
       setStage(2)
-      navigate("/result", { replace: true, state: { result: latestReportRef.current } })
+
+      const allReports = reportsRef.current
+      if (allReports && allReports.length > 0) {
+        // Filter for windows where actual speech was detected, or use all
+        const speechReports = allReports.filter((r) => r.is_speech !== false)
+        const targetReports = speechReports.length > 0 ? speechReports : allReports
+
+        const maxSpoofProb = Math.max(...targetReports.map((r) => r.spoof_probability))
+        const avgSpoofProb = targetReports.reduce((s, r) => s + r.spoof_probability, 0) / targetReports.length
+        const isSpoof = maxSpoofProb >= 0.50
+        const finalConfidence = isSpoof ? maxSpoofProb : (1.0 - maxSpoofProb)
+        const finalRisk = maxSpoofProb >= 0.80 ? "HIGH" : maxSpoofProb >= 0.50 ? "MEDIUM" : "LOW"
+        const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.50).length
+
+        const aggregatedResult = {
+          result: isSpoof ? "spoof" : "real",
+          status: isSpoof ? (maxSpoofProb >= 0.80 ? "high_risk" : "suspicious") : "likely_real",
+          spoof_probability: maxSpoofProb,
+          max_spoof_probability: maxSpoofProb,
+          average_spoof_probability: avgSpoofProb,
+          confidence: finalConfidence,
+          risk: finalRisk,
+          total_segments: allReports.length,
+          suspicious_segments: suspiciousCount,
+          segments: allReports.map((r, i) => ({
+            segment: i + 1,
+            start_time: Math.max(0, (r.elapsed_seconds ?? (i + 1) * 2) - 4),
+            end_time: r.elapsed_seconds ?? (i + 1) * 2,
+            spoof_probability: r.spoof_probability,
+            bonafide_probability: 1.0 - r.spoof_probability,
+            result: r.result,
+          })),
+        }
+        navigate("/result", { replace: true, state: { result: aggregatedResult } })
+      } else {
+        navigate("/result", { replace: true, state: { result: latestReportRef.current } })
+      }
     }
 
     const analyseUpload = async (blob) => {
@@ -131,6 +168,7 @@ function Analyzing() {
         recorder = new MediaRecorder(stream)
         recorder.start()
 
+        reportsRef.current = []
         const socket = new WebSocket(getWebSocketUrl())
         socket.binaryType = "arraybuffer"
         socketRef.current = socket
@@ -142,6 +180,7 @@ function Analyzing() {
             if (data.type !== "prediction" || cancelled) return
             const report = normaliseReport(data, (latestReportRef.current?.elapsed_seconds ?? 0) + 2)
             latestReportRef.current = report
+            reportsRef.current = [...reportsRef.current, report]
             setLiveReport(report)
             setReports((current) => [...current, report])
             setStage(2)

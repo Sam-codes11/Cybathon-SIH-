@@ -11,11 +11,11 @@ from torch import nn
 # MODEL PATH
 # ============================================================
 
-MODEL_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "models"
-    / "spoof_cnn_best.pth"
-)
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+FINETUNED_PATH = MODELS_DIR / "spoof_cnn_finetuned.pth"
+BASE_PATH = MODELS_DIR / "spoof_cnn_best.pth"
+
+MODEL_PATH = FINETUNED_PATH if FINETUNED_PATH.exists() else BASE_PATH
 
 
 # ============================================================
