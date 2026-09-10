@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket):
     BYTES_PER_SAMPLE = 2
 
     WINDOW_SECONDS = 4
-    HOP_SECONDS = 2
+    HOP_SECONDS = 4
 
     WINDOW_BYTES = SAMPLE_RATE * WINDOW_SECONDS * BYTES_PER_SAMPLE  # 128,000 bytes
     HOP_BYTES = SAMPLE_RATE * HOP_SECONDS * BYTES_PER_SAMPLE        # 64,000 bytes
