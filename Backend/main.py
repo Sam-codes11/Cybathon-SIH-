@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket):
     BYTES_PER_SAMPLE = 2
 
     WINDOW_SECONDS = 4
-    HOP_SECONDS = 4
+    HOP_SECONDS = 2
 
     WINDOW_BYTES = SAMPLE_RATE * WINDOW_SECONDS * BYTES_PER_SAMPLE  # 128,000 bytes
     HOP_BYTES = SAMPLE_RATE * HOP_SECONDS * BYTES_PER_SAMPLE        # 64,000 bytes
@@ -115,98 +115,38 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_bytes()
             audio_buffer.extend(data)
 
-            # Early Feedback: evaluate first 2s immediately if user just started speaking
-            if analysis_count == 0 and len(audio_buffer) >= HOP_BYTES and len(audio_buffer) < WINDOW_BYTES:
-                chunk_bytes = bytes(audio_buffer[:HOP_BYTES])
-                sp, bp, risk, status, label, conf, rms, is_speech = process_pcm_window(chunk_bytes)
-                session_spoof_probs.append(sp)
-                analysis_count += 1
-                badge = "🚨 AI DEEPFAKE" if sp >= 0.80 else ("⚠️  SUSPICIOUS" if sp >= 0.50 else "🛡️  BONAFIDE")
-                speech_tag = "SPEECH" if is_speech else "SILENCE"
-                print(
-                    f"[02s] {badge} | Spoof: {sp*100:5.1f}% | Conf: {conf*100:5.1f}% | "
-                    f"RMS: {rms:.4f} ({speech_tag})",
-                    flush=True
-                )
-                await websocket.send_json({
-                    "type": "prediction",
-                    "spoof_probability": round(sp, 4),
-                    "confidence": round(conf, 4),
-                    "risk": risk,
-                    "result": label,
-                    "status": status,
-                    "elapsed_seconds": 2,
-                    "is_speech": is_speech
-                })
+            # Early Feedback: wait until the first complete 4-second model window is available
+# Do NOT send a padded 2-second chunk to the 4-second model.
 
-            # Full sliding 4-second windows with 2-second hops
-            while len(audio_buffer) >= WINDOW_BYTES:
-                window_bytes = bytes(audio_buffer[:WINDOW_BYTES])
-                del audio_buffer[:HOP_BYTES]
+if analysis_count == 0 and len(audio_buffer) >= WINDOW_BYTES:
+    window_bytes = bytes(audio_buffer[:WINDOW_BYTES])
+    del audio_buffer[:HOP_BYTES]
 
-                sp, bp, risk, status, label, conf, rms, is_speech = process_pcm_window(window_bytes)
-                session_spoof_probs.append(sp)
-                analysis_count += 1
-                elapsed = analysis_count * HOP_SECONDS
+    sp, bp, risk, status, label, conf, rms, is_speech = process_pcm_window(window_bytes)
 
-                badge = "🚨 AI DEEPFAKE" if sp >= 0.80 else ("⚠️  SUSPICIOUS" if sp >= 0.50 else "🛡️  BONAFIDE")
-                speech_tag = "SPEECH" if is_speech else "SILENCE"
-                print(
-                    f"[{elapsed:02d}s] {badge} | Spoof: {sp*100:5.1f}% | Conf: {conf*100:5.1f}% | "
-                    f"RMS: {rms:.4f} ({speech_tag})",
-                    flush=True
-                )
-                await websocket.send_json({
-                    "type": "prediction",
-                    "spoof_probability": round(sp, 4),
-                    "confidence": round(conf, 4),
-                    "risk": risk,
-                    "result": label,
-                    "status": status,
-                    "elapsed_seconds": elapsed,
-                    "is_speech": is_speech
-                })
+    session_spoof_probs.append(sp)
+    analysis_count += 1
 
-    except WebSocketDisconnect:
-        # Process any remaining speech tail if at least 1 second of audio remains
-        if len(audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE:
-            sp, bp, risk, status, label, conf, rms, is_speech = process_pcm_window(bytes(audio_buffer))
-            session_spoof_probs.append(sp)
-            analysis_count += 1
-            badge = "🚨 AI DEEPFAKE" if sp >= 0.80 else ("⚠️  SUSPICIOUS" if sp >= 0.50 else "🛡️  BONAFIDE")
-            print(
-                f"[TAIL] {badge} | Spoof: {sp*100:5.1f}% | Conf: {conf*100:5.1f}% | RMS: {rms:.4f}",
-                flush=True
-            )
+    elapsed = WINDOW_SECONDS
 
-        max_spoof = max(session_spoof_probs) if session_spoof_probs else 0.0
-        overall_verdict = (
-            "🚨 AI DEEPFAKE DETECTED (HIGH RISK)"
-            if max_spoof >= 0.80
-            else ("⚠️ SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.50 else "🛡️ GENUINE VOICE VERIFIED (LOW RISK)")
-        )
-        print("\n" + "=" * 65, flush=True)
-        print("🎙️ LIVE AUDIO CONNECTION CLOSED", flush=True)
-        print(f"Total Windows Evaluated: {analysis_count}", flush=True)
-        print(f"Max Spoof Probability:   {max_spoof*100:.1f}%", flush=True)
-        print(f"Session Verdict:         {overall_verdict}", flush=True)
-        print("=" * 65 + "\n", flush=True)
+    badge = "🚨 AI DEEPFAKE" if sp >= 0.80 else (
+        "⚠️ SUSPICIOUS" if sp >= 0.50 else "🛡️ BONAFIDE"
+    )
+    speech_tag = "SPEECH" if is_speech else "SILENCE"
 
-    except Exception as e:
-        print(f"WebSocket error: {repr(e)}", flush=True)
-        try:
-            await websocket.close()
-        except:
-            pass
+    print(
+        f"[{elapsed:02d}s] {badge} | Spoof: {sp*100:5.1f}% | "
+        f"Conf: {conf*100:5.1f}% | RMS: {rms:.4f} ({speech_tag})",
+        flush=True
+    )
 
-
-# ---------------------------------------------------------
-# Health check
-# ---------------------------------------------------------
-
-@app.get("/")
-def home():
-    return {
-        "message": "Voice Shield Backend is running",
-        "live_detection": True
-    }
+    await websocket.send_json({
+        "type": "prediction",
+        "spoof_probability": round(sp, 4),
+        "confidence": round(conf, 4),
+        "risk": risk,
+        "result": label,
+        "status": status,
+        "elapsed_seconds": elapsed,
+        "is_speech": is_speech
+    })
