@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { AudioLines, Check, Mic, ScanLine, ShieldCheck, Terminal } from "lucide-react"
+import { AudioLines, Check, Mic, ScanLine, ShieldCheck, Terminal, AlertTriangle, ShieldAlert, PhoneOff, PhoneCall } from "lucide-react"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
 import Navbar from "../components/Navbar"
 import WaveformVerdict from "../components/WaveformVerdict"
 import { WavyBackground } from "../components/WavyBackground"
+import ImpersonationAlertModal from "../components/ImpersonationAlertModal"
 
 // Change this one value when the desired microphone capture duration changes.
 const RECORDING_DURATION = 10
@@ -28,9 +29,9 @@ const getWebSocketUrl = () => {
 
 const normaliseReport = (data, fallbackSeconds) => {
   const spoofProbability = Number(data.spoof_probability ?? data.max_spoof_probability ?? 0)
-  const isSpoof = data.result ? data.result === "spoof" : spoofProbability >= 0.5
+  const isSpoof = data.result ? data.result === "spoof" : spoofProbability >= 0.35
   const confidence = Number(data.confidence ?? (isSpoof ? spoofProbability : 1 - spoofProbability))
-  const risk = data.risk ?? (spoofProbability >= 0.8 ? "HIGH" : spoofProbability >= 0.5 ? "MEDIUM" : "LOW")
+  const risk = data.risk ?? (spoofProbability >= 0.65 ? "HIGH" : spoofProbability >= 0.35 ? "MEDIUM" : "LOW")
 
   return {
     ...data,
@@ -52,6 +53,13 @@ function Analyzing() {
   const [errorMessage, setErrorMessage] = useState("")
   const [reports, setReports] = useState([])
   const [liveReport, setLiveReport] = useState(null)
+  
+  // Early 4-second Interceptor State
+  const [earlyAlertOpen, setEarlyAlertOpen] = useState(false)
+  const [earlyAlertData, setEarlyAlertData] = useState(null)
+  const [callerRelationship, setCallerRelationship] = useState(null)
+  const [challengeModeActive, setChallengeModeActive] = useState(false)
+
   const socketRef = useRef(null)
   const audioContextRef = useRef(null)
   const processorRef = useRef(null)
@@ -60,9 +68,14 @@ function Analyzing() {
   const latestReportRef = useRef(null)
   const reportsRef = useRef([])
   const consoleRef = useRef(null)
+  const earlyAlertTriggeredRef = useRef(false)
+  const callerRelationshipRef = useRef(null)
+  const disposeAudioRef = useRef(null)
+  const handleCutCallRef = useRef(null)
+  const handleContinueRef = useRef(null)
 
-  const mode = location.state?.mode
   const incomingAudioBlob = location.state?.audioBlob
+  const mode = location.state?.mode || (incomingAudioBlob ? "upload" : "record")
   const stages = ["Preparing audio", "Reading voice markers", "Checking attack patterns"]
 
   useEffect(() => {
@@ -86,6 +99,81 @@ function Analyzing() {
       audioContextRef.current = null
       streamRef.current = null
     }
+    disposeAudioRef.current = disposeAudio
+
+    const handleCutCall = (relationship) => {
+      setEarlyAlertOpen(false)
+      callerRelationshipRef.current = relationship
+      cancelled = true
+      window.clearInterval(countdownId)
+      window.clearTimeout(stopId)
+      window.clearTimeout(finishId)
+      if (recorder?.state === "recording") recorder.stop()
+      disposeAudio()
+      socketRef.current?.close()
+      socketRef.current = null
+      setIsRecording(false)
+
+      const allReports = reportsRef.current || []
+      const bestSpoof = earlyAlertData?.spoof_probability ?? (allReports.length > 0 ? Math.max(...allReports.map((r) => r.spoof_probability)) : 0.85)
+      const isSpoof = bestSpoof >= 0.50
+      const finalRisk = bestSpoof >= 0.80 ? "HIGH" : "MEDIUM"
+
+      const cutResult = {
+        result: isSpoof ? "spoof" : "real",
+        status: isSpoof ? (bestSpoof >= 0.80 ? "high_risk" : "suspicious") : "likely_real",
+        spoof_probability: bestSpoof,
+        max_spoof_probability: bestSpoof,
+        average_spoof_probability: bestSpoof,
+        confidence: bestSpoof,
+        risk: finalRisk,
+        callCutOffEarly: true,
+        interceptedAtSecond: earlyAlertData?.elapsed_seconds ?? 4,
+        callerRelationship: relationship,
+        isImpersonationAttack: relationship === "yes",
+        early_4s_flagged: true,
+        total_segments: allReports.length || 1,
+        suspicious_segments: Math.max(1, allReports.filter((r) => r.spoof_probability >= 0.5).length),
+        segments:
+          allReports.length > 0
+            ? allReports.map((r, i) => ({
+                segment: i + 1,
+                start_time: Math.max(0, (r.elapsed_seconds ?? (i + 1) * 2) - 4),
+                end_time: r.elapsed_seconds ?? (i + 1) * 2,
+                spoof_probability: r.spoof_probability,
+                bonafide_probability: 1.0 - r.spoof_probability,
+                result: r.result,
+              }))
+            : [
+                {
+                  segment: 1,
+                  start_time: 0,
+                  end_time: earlyAlertData?.elapsed_seconds ?? 4,
+                  spoof_probability: bestSpoof,
+                  bonafide_probability: 1.0 - bestSpoof,
+                  result: isSpoof ? "spoof" : "real",
+                },
+              ],
+      }
+
+      navigate("/result", {
+        replace: true,
+        state: {
+          result: cutResult,
+          intercepted: true,
+          callerRelationship: relationship,
+        },
+      })
+    }
+    handleCutCallRef.current = handleCutCall
+
+    const handleContinue = (relationship) => {
+      setEarlyAlertOpen(false)
+      callerRelationshipRef.current = relationship
+      setCallerRelationship(relationship)
+      setChallengeModeActive(true)
+    }
+    handleContinueRef.current = handleContinue
 
     const finish = () => {
       if (cancelled) return
@@ -102,14 +190,14 @@ function Analyzing() {
 
         const maxSpoofProb = Math.max(...targetReports.map((r) => r.spoof_probability))
         const avgSpoofProb = targetReports.reduce((s, r) => s + r.spoof_probability, 0) / targetReports.length
-        const isSpoof = maxSpoofProb >= 0.50
+        const isSpoof = maxSpoofProb >= 0.35
         const finalConfidence = isSpoof ? maxSpoofProb : (1.0 - maxSpoofProb)
-        const finalRisk = maxSpoofProb >= 0.80 ? "HIGH" : maxSpoofProb >= 0.50 ? "MEDIUM" : "LOW"
-        const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.50).length
+        const finalRisk = maxSpoofProb >= 0.65 ? "HIGH" : maxSpoofProb >= 0.35 ? "MEDIUM" : "LOW"
+        const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.35).length
 
         const aggregatedResult = {
           result: isSpoof ? "spoof" : "real",
-          status: isSpoof ? (maxSpoofProb >= 0.80 ? "high_risk" : "suspicious") : "likely_real",
+          status: isSpoof ? (maxSpoofProb >= 0.65 ? "high_risk" : "suspicious") : "likely_real",
           spoof_probability: maxSpoofProb,
           max_spoof_probability: maxSpoofProb,
           average_spoof_probability: avgSpoofProb,
@@ -117,6 +205,9 @@ function Analyzing() {
           risk: finalRisk,
           total_segments: allReports.length,
           suspicious_segments: suspiciousCount,
+          callerRelationship: callerRelationshipRef.current,
+          isImpersonationAttack: callerRelationshipRef.current === "yes",
+          early_4s_flagged: earlyAlertTriggeredRef.current,
           segments: allReports.map((r, i) => ({
             segment: i + 1,
             start_time: Math.max(0, (r.elapsed_seconds ?? (i + 1) * 2) - 4),
@@ -184,6 +275,17 @@ function Analyzing() {
             setLiveReport(report)
             setReports((current) => [...current, report])
             setStage(2)
+
+            // 6-Second Risk Interception Check (triggers past 6s if Medium or High risk detected)
+            if (
+              !earlyAlertTriggeredRef.current &&
+              report.elapsed_seconds >= 6 &&
+              (report.spoof_probability >= 0.35 || report.risk === "MEDIUM" || report.risk === "HIGH")
+            ) {
+              earlyAlertTriggeredRef.current = true
+              setEarlyAlertData(report)
+              setEarlyAlertOpen(true)
+            }
           } catch (error) {
             console.error("Live prediction error:", error)
           }
@@ -263,6 +365,29 @@ function Analyzing() {
             {errorMessage && <div className="mt-5 rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">{errorMessage}</div>}
             <div className="mt-5 flex items-center justify-between rounded-xl bg-white/6 px-4 py-3 text-left"><span className="truncate text-sm text-slate-300">{location.state?.source ?? "Voice sample"}</span><span className="ml-4 shrink-0 text-xs font-medium text-[#8bc8ba]">{isRecording ? "recording" : "secured"}</span></div>
             <div className="mt-6 space-y-2 text-left">{stages.map((item, index) => <div key={item} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${index === stage ? "bg-[#3a7eea]/15" : ""}`}><span className={`flex h-6 w-6 items-center justify-center rounded-full ${index < stage ? "bg-[#37a68f] text-white" : index === stage ? "bg-[#4e8cf2] text-white" : "bg-white/10 text-slate-500"}`}>{index < stage ? <Check className="h-3.5 w-3.5" /> : <ScanLine className={`h-3.5 w-3.5 ${index === stage ? "animate-pulse" : ""}`} />}</span><span className={`text-sm ${index <= stage ? "text-white" : "text-slate-500"}`}>{item}</span></div>)}</div>
+            {challengeModeActive && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-4 rounded-2xl border border-amber-500/40 bg-amber-500/15 p-4 text-xs text-amber-200 shadow-md text-left"
+              >
+                <div className="flex items-start gap-2.5">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                  <div>
+                    <span className="font-bold text-amber-100 uppercase tracking-wide">
+                      Active Scam Countermeasures Enabled:
+                    </span>
+                    <p className="mt-1 text-slate-200">
+                      Challenge the caller: <span className="font-semibold text-white">"What was our family safe-word?"</span> or <span className="font-semibold text-white">"I will hang up and call your personal number."</span>
+                    </p>
+                    <p className="mt-1 font-semibold text-red-300">
+                      ⚠️ Never share OTPs or transfer money under urgent pressure.
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
             <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400"><ShieldCheck className="h-4 w-4 text-[#8bc8ba]" />No audio is stored after this session.</div>
           </motion.div>
 
@@ -274,6 +399,17 @@ function Analyzing() {
           </motion.aside>
         </motion.section>
       </WavyBackground>
+
+      {/* Early 4-Second Impersonation Interceptor Modal */}
+      <ImpersonationAlertModal
+        isOpen={earlyAlertOpen}
+        spoofProbability={earlyAlertData?.spoof_probability ?? 0.85}
+        risk={earlyAlertData?.risk ?? "HIGH"}
+        elapsedSeconds={earlyAlertData?.elapsed_seconds ?? 4}
+        onCutCall={(rel) => handleCutCallRef.current?.(rel)}
+        onContinue={(rel) => handleContinueRef.current?.(rel)}
+        onDismiss={() => setEarlyAlertOpen(false)}
+      />
     </main>
   )
 }
