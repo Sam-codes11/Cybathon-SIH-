@@ -116,12 +116,12 @@ function Analyzing() {
 
       const allReports = reportsRef.current || []
       const bestSpoof = earlyAlertData?.spoof_probability ?? (allReports.length > 0 ? Math.max(...allReports.map((r) => r.spoof_probability)) : 0.85)
-      const isSpoof = bestSpoof >= 0.50
-      const finalRisk = bestSpoof >= 0.80 ? "HIGH" : "MEDIUM"
+      const isSpoof = bestSpoof >= 0.35
+      const finalRisk = bestSpoof >= 0.65 ? "HIGH" : bestSpoof >= 0.35 ? "MEDIUM" : "LOW"
 
       const cutResult = {
         result: isSpoof ? "spoof" : "real",
-        status: isSpoof ? (bestSpoof >= 0.80 ? "high_risk" : "suspicious") : "likely_real",
+        status: isSpoof ? (bestSpoof >= 0.65 ? "high_risk" : "suspicious") : "likely_real",
         spoof_probability: bestSpoof,
         max_spoof_probability: bestSpoof,
         average_spoof_probability: bestSpoof,
@@ -133,7 +133,7 @@ function Analyzing() {
         isImpersonationAttack: relationship === "yes",
         early_4s_flagged: true,
         total_segments: allReports.length || 1,
-        suspicious_segments: Math.max(1, allReports.filter((r) => r.spoof_probability >= 0.5).length),
+        suspicious_segments: Math.max(1, allReports.filter((r) => r.spoof_probability >= 0.35).length),
         segments:
           allReports.length > 0
             ? allReports.map((r, i) => ({
@@ -292,7 +292,13 @@ function Analyzing() {
         }
         socket.onerror = () => setErrorMessage("Live voice detection could not connect to the backend.")
 
-        const context = new AudioContext()
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext
+        let context
+        try {
+          context = new AudioContextClass({ sampleRate: 16000 })
+        } catch {
+          context = new AudioContextClass()
+        }
         audioContextRef.current = context
         await context.resume()
         const source = context.createMediaStreamSource(stream)
@@ -302,15 +308,33 @@ function Analyzing() {
         processor.onaudioprocess = (event) => {
           if (socket.readyState !== WebSocket.OPEN) return
           const input = event.inputBuffer.getChannelData(0)
+
+          if (context.sampleRate === 16000) {
+            const pcm = new Int16Array(input.length)
+            for (let index = 0; index < input.length; index += 1) {
+              const sample = Math.max(-1, Math.min(1, input[index]))
+              pcm[index] = sample < 0 ? sample * 32768 : sample * 32767
+            }
+            socket.send(pcm.buffer)
+            return
+          }
+
+          // Anti-aliasing box-car window downsampler (averages samples within decimation window)
           const ratio = context.sampleRate / 16000
-          const pcm = new Int16Array(Math.floor(input.length / ratio))
-          for (let index = 0; index < pcm.length; index += 1) {
-            const position = index * ratio
-            const left = Math.floor(position)
-            const right = Math.min(left + 1, input.length - 1)
-            const sample = input[left] * (1 - (position - left)) + input[right] * (position - left)
-            const clipped = Math.max(-1, Math.min(1, sample))
-            pcm[index] = clipped < 0 ? clipped * 32768 : clipped * 32767
+          const outLength = Math.floor(input.length / ratio)
+          const pcm = new Int16Array(outLength)
+          for (let i = 0; i < outLength; i += 1) {
+            const start = Math.floor(i * ratio)
+            const end = Math.min(input.length, Math.floor((i + 1) * ratio))
+            let sum = 0
+            let count = 0
+            for (let j = start; j < end; j += 1) {
+              sum += input[j]
+              count += 1
+            }
+            const avg = count > 0 ? sum / count : input[start]
+            const clipped = Math.max(-1, Math.min(1, avg))
+            pcm[i] = clipped < 0 ? clipped * 32768 : clipped * 32767
           }
           socket.send(pcm.buffer)
         }
