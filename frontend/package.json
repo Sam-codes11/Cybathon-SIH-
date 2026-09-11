@@ -19,7 +19,8 @@
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.3",
     "simplex-noise": "^4.0.3",
-    "tailwindcss": "^4.1.18"
+    "tailwindcss": "^4.1.18",
+    "vite-plugin-react": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
