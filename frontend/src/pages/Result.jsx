@@ -95,8 +95,8 @@ function Result() {
     return (
       <main className="min-h-screen flex items-center justify-center bg-[#0a101d] text-white px-5">
         <div className="text-center max-w-md rounded-4xl border border-white/10 bg-white/5 p-10 backdrop-blur">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-red-500/20">
-            <AlertTriangle className="h-8 w-8 text-red-300" />
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#7c3f56]/30">
+            <AlertTriangle className="h-8 w-8 text-[#efbac5]" />
           </div>
           <h1 className="font-display text-2xl font-semibold text-white">Analysis failed</h1>
           <p className="mt-3 text-sm leading-6 text-[#8291aa]">We couldn't reach the backend to analyze your sample. Please try again.</p>
@@ -338,7 +338,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
 
               <div className="flex flex-wrap items-center gap-2">
                 {intercepted && (
-                  <span className="rounded-full border border-red-200 bg-red-50 px-3.5 py-1.5 text-xs font-bold text-red-700">
+                  <span className="rounded-full border border-[#c68a98] bg-[#fbf4f6] px-3.5 py-1.5 text-xs font-bold text-[#914459]">
                     Intercept Active
                   </span>
                 )}
@@ -354,20 +354,20 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
               <motion.div
                 {...animation}
                 transition={{ duration: 0.5, delay: 0.1 }}
-                className="mt-6 overflow-hidden rounded-2xl border border-red-300 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 p-5 text-white shadow-lg"
+                className="mt-6 overflow-hidden rounded-2xl border border-[#b84f60] bg-gradient-to-r from-[#8f2639] via-[#a83745] to-[#702536] p-5 text-white shadow-lg"
               >
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-start gap-3.5">
                     <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/20">
                       {isImpersonation ? (
-                        <UserX className="h-6 w-6 text-yellow-200" />
+                        <UserX className="h-6 w-6 text-[#fee2e2]" />
                       ) : (
                         <PhoneOff className="h-6 w-6 text-white" />
                       )}
                     </span>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="rounded bg-black/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-200">
+                        <span className="rounded bg-black/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#fee2e2]">
                           {isImpersonation ? "IMPERSONATION ATTACK" : "SYNTHETIC CALL DETECTED"}
                         </span>
                         {intercepted && (
@@ -381,7 +381,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                           ? "Active Voice Clone Impersonation Detected"
                           : "AI-Generated Voice Call Flagged"}
                       </h2>
-                      <p className="mt-1 text-xs text-red-100">
+                      <p className="mt-1 text-xs text-[#ffe4e6]">
                         {isImpersonation
                           ? "The caller claimed familiarity, but our model identified synthetic markers matching emergency extortion or Digital Arrest templates."
                           : "High probability of AI text-to-speech or voice conversion. Do not comply with financial requests."}
@@ -392,9 +392,9 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                   <div className="flex shrink-0 items-center gap-2 sm:self-center">
                     <a
                       href="tel:1930"
-                      className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-bold text-red-700 shadow-sm transition hover:bg-red-50"
+                      className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-bold text-[#8f2639] shadow-sm transition hover:bg-[#fff1f2]"
                     >
-                      <PhoneCall className="h-4 w-4 text-red-600" />
+                      <PhoneCall className="h-4 w-4 text-[#b4233e]" />
                       Call 1930 Now
                     </a>
                   </div>
@@ -419,16 +419,16 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                         <span className="rounded-full bg-blue-200/80 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-900">
                           Unknown Caller
                         </span>
-                        <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-800">
+                        <span className="rounded-full bg-[#d9efea] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#28756f]">
                           PDF Report Ready
                         </span>
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
                             riskScore >= 70
-                              ? "bg-red-100 text-red-800"
+                              ? "bg-[#f5e4e9] text-[#8d4257]"
                               : riskScore >= 40
-                              ? "bg-amber-100 text-amber-800"
-                              : "bg-green-100 text-green-800"
+                              ? "bg-[#f4eadf] text-[#92674b]"
+                              : "bg-[#d9efea] text-[#28756f]"
                           }`}
                         >
                           {riskScore >= 70
@@ -451,7 +451,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                     <button
                       type="button"
                       onClick={downloadReportFile}
-                      className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-blue-500 hover:shadow-lg"
+                      className="inline-flex items-center gap-2 rounded-xl bg-[#426fae] px-5 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-[#355f99] hover:shadow-lg"
                     >
                       <Download className="h-4 w-4" />
                       Download PDF Report
@@ -588,7 +588,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                       key={param.id}
                       className={`rounded-2xl border p-4 transition-all ${
                         param.flagged
-                          ? "border-amber-300 bg-amber-50/40"
+                          ? "border-[#c9a17e] bg-[#fbf6f0]"
                           : "border-slate-200 bg-slate-50/50"
                       }`}
                     >
@@ -597,7 +597,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                           <span
                             className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
                               param.flagged
-                                ? "bg-amber-500/20 text-amber-700"
+                                ? "bg-[#f0dfcc] text-[#92674b]"
                                 : "bg-slate-200 text-slate-600"
                             }`}
                           >
@@ -609,7 +609,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                               Current audio:{" "}
                               <span
                                 className={`font-semibold ${
-                                  param.flagged ? "text-amber-900" : "text-slate-800"
+                                  param.flagged ? "text-[#6f4b37]" : "text-slate-800"
                                 }`}
                               >
                                 {param.value}
@@ -620,7 +620,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                         <span
                           className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
                             param.flagged
-                              ? "bg-amber-200/80 text-amber-900"
+                              ? "bg-[#ecd7c1] text-[#6f4b37]"
                               : "bg-slate-200 text-slate-700"
                           }`}
                         >
@@ -672,12 +672,12 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                   </div>
 
                   {/* Step 2 */}
-                  <div className="rounded-2xl border border-amber-300 bg-amber-50/60 p-4">
+                  <div className="rounded-2xl border border-[#c9a17e] bg-[#fbf6f0] p-4">
                     <div className="flex items-center justify-between">
-                      <span className="rounded-md bg-amber-600 px-2 py-0.5 font-mono text-[11px] font-bold text-white">
+                      <span className="rounded-md bg-[#9a7053] px-2 py-0.5 font-mono text-[11px] font-bold text-white">
                         STEP 2
                       </span>
-                      <Clock className="h-4 w-4 text-amber-500" />
+                      <Clock className="h-4 w-4 text-[#a77a59]" />
                     </div>
                     <h4 className="mt-3 text-sm font-bold text-slate-800">
                       Golden Hour Protection
@@ -747,7 +747,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                   {/* 1930 Dial Button */}
                   <a
                     href="tel:1930"
-                    className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-5 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-red-500"
+                    className="inline-flex items-center gap-2 rounded-xl bg-[#98485b] px-5 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-[#823c50]"
                   >
                     <PhoneCall className="h-4 w-4 animate-pulse text-white" />
                     Dial 1930 (Helpline)
@@ -794,7 +794,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                     <button
                       type="button"
                       onClick={downloadReportFile}
-                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-500 shadow-md"
+                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-[#2f8c86] px-5 py-2.5 text-xs font-bold text-white transition hover:bg-[#27756f] shadow-md"
                     >
                       <FileText className="h-4 w-4" />
                       Download Report (.pdf)
