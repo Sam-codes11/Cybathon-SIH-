@@ -1,7 +1,13 @@
 {
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+<<<<<<< HEAD
     "jspdf": "^4.2.1",
+=======
+    "framer-motion": "^13.2.0",
+    "lucide-react": "^1.43.0",
+    "react-router-dom": "^7.18.3",
+>>>>>>> 88c3e5ff45b2cf037296a11b6922d627555bc95c
     "tailwindcss": "^4.3.3"
   }
 }
