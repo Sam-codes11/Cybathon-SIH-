@@ -172,7 +172,14 @@ def create_spectrogram(waveform):
 def predict_window(waveform):
     """
     Run the CNN on exactly one 4-second waveform.
+    Calibrated with peak normalization to match training data distribution.
     """
+    if waveform.ndim > 1:
+        waveform = waveform.mean(dim=-1)
+
+    peak = waveform.abs().max()
+    if peak > 0:
+        waveform = waveform / peak * 0.92
 
     spectrogram = create_spectrogram(
         waveform
@@ -270,65 +277,46 @@ def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
 
 def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     """
-    Dual-engine threat evaluation:
-    1. Direct Neural CNN Inference (detects uncompressed digital AI voice).
-    2. Pre-emphasis High-Frequency Restoration (recovers attenuated vocoder phase harmonics).
-    3. Acoustic Physical Replay Forensics (detects smartphone loudspeaker playback and multipath comb filtering).
+    Calibrated dual-engine threat evaluation:
+    1. Direct Neural CNN Inference (calibrated with peak normalization matching training pipeline).
+    2. Acoustic Physical Forensics (spectral energy distribution and quefrency analysis).
     """
-    # 1. Base CNN
+    # 1. Base CNN prediction (peak-normalized to training distribution)
     bonafide_raw, spoof_raw = predict_window(waveform)
 
-    # 2. Pre-emphasis Boost
-    w_boost = apply_pre_emphasis(waveform)
-    peak_b = w_boost.abs().max()
-    if peak_b > 0:
-        w_boost = w_boost / peak_b * 0.92
-    _, spoof_boost = predict_window(w_boost)
-
-    # 3. Acoustic Forensics
+    # 2. Acoustic Forensics (extracted for dossier metadata & physical verification)
     forensics = extract_acoustic_forensics(waveform, sr)
     sm_ratio = forensics["sub_mid_ratio"]
     refl = forensics["reflection_prominence"]
 
-    # Physical Phone Loudspeaker Signature:
-    # Smartphone micro-speakers have physical cutoff < 250Hz (sm_ratio < 16.0)
-    # and multipath chassis/desk acoustic reflection prominence (refl >= 6.0).
-    is_phone_replay = bool((sm_ratio < 16.0) and (refl >= 6.0))
+    # Only flag phone replay if neural network already detects suspicious synthetic traits (>= 0.40)
+    # AND severe transducer band cutoff is verified
+    is_phone_replay = bool((spoof_raw >= 0.40) and (sm_ratio < 10.0) and (refl >= 7.5))
 
-    if spoof_raw >= 0.45:
+    if is_phone_replay:
+        final_spoof = min(0.99, spoof_raw * 1.35)
+        detection_mode = "PHONE_REPLAY_AI"
+    elif spoof_raw >= 0.50:
         final_spoof = spoof_raw
         detection_mode = "DIRECT_AI"
-    elif is_phone_replay:
-        # Replay detected: phone speaker attenuation lowers raw CNN to ~0.08-0.25.
-        replay_severity = min(1.0, (16.0 - sm_ratio) / 14.0)
-        refl_boost = min(1.0, (refl - 5.5) / 5.0)
-        neural_trace = max(spoof_raw, spoof_boost)
-
-        calibrated_replay = 0.55 + 0.35 * replay_severity + 0.10 * refl_boost
-        if neural_trace >= 0.07:
-            final_spoof = max(neural_trace * 3.5, calibrated_replay)
-        else:
-            final_spoof = calibrated_replay * 0.85
-        detection_mode = "PHONE_REPLAY_AI"
     else:
-        # Natural human vocal tract (rich fundamental resonance sm_ratio >= 16.0)
-        final_spoof = max(spoof_raw, spoof_boost * 0.8)
+        final_spoof = spoof_raw
         detection_mode = "LIVE_HUMAN"
 
     final_spoof = min(0.999, max(0.01, float(final_spoof)))
     bonafide_prob = 1.0 - final_spoof
 
-    if final_spoof >= 0.65:
+    if final_spoof >= 0.70:
         status = "high_risk"
         risk = "HIGH"
-    elif final_spoof >= 0.35:
+    elif final_spoof >= 0.50:
         status = "suspicious"
         risk = "MEDIUM"
     else:
         status = "likely_real"
         risk = "LOW"
 
-    result_label = "spoof" if final_spoof >= 0.35 else "real"
+    result_label = "spoof" if final_spoof >= 0.50 else "real"
     confidence = final_spoof if result_label == "spoof" else bonafide_prob
 
     return final_spoof, bonafide_prob, risk, status, result_label, confidence, detection_mode, forensics
@@ -344,10 +332,10 @@ def assess_impersonation_threat(max_spoof_prob, segment_results=None, filename=N
     predictive threat category, and generates cyber helpline advisory and incident dossier.
     """
     segment_results = segment_results or []
-    is_spoof = max_spoof_prob >= 0.35
+    is_spoof = max_spoof_prob >= 0.50
 
     early_flagged = any(
-        s.get("spoof_probability", 0) >= 0.35
+        s.get("spoof_probability", 0) >= 0.50
         for s in segment_results
         if s.get("end_time", 999) <= 4.5
     )
@@ -357,7 +345,7 @@ def assess_impersonation_threat(max_spoof_prob, segment_results=None, filename=N
         for s in segment_results
     )
 
-    if max_spoof_prob >= 0.65:
+    if max_spoof_prob >= 0.70:
         threat_level = "CRITICAL"
         threat_title = "High-Confidence AI Voice Clone Attack" if not is_replayed else "AI Voice Clone Replay Attack"
         threat_description = (
@@ -366,12 +354,12 @@ def assess_impersonation_threat(max_spoof_prob, segment_results=None, filename=N
             "law enforcement officer, or bank official, this is an active impersonation attack."
         )
         predicted_attack_vector = "AI Voice Cloning / Deepfake Impersonation Scam (Digital Arrest / Virtual Kidnapping)"
-    elif max_spoof_prob >= 0.35:
+    elif max_spoof_prob >= 0.50:
         threat_level = "ELEVATED"
         threat_title = "Suspicious Synthetic Speech Pattern"
         threat_description = (
-            "Anomalous acoustic textures, smartphone loudspeaker replay signatures, or synthetic prosody detected. "
-            "High probability of AI voice alteration, physical replay attack, or voice spoofing."
+            "Anomalous acoustic textures or synthetic prosody detected. "
+            "High probability of AI voice alteration or voice spoofing."
         )
         predicted_attack_vector = "Synthetic Voice Replay or Voice Conversion Attack"
     else:
@@ -732,6 +720,8 @@ def predict_audio(file):
             )
 
 
+            seg_rms = torch.sqrt(torch.mean(segment_waveform ** 2)).item()
+
             segment_results.append(
                 {
                     "segment": index + 1,
@@ -755,6 +745,7 @@ def predict_audio(file):
                     "risk": seg_risk,
                     "status": seg_status,
                     "detection_mode": seg_detection_mode,
+                    "rms": round(seg_rms, 4),
                     "forensics": seg_forensics
                 }
             )
@@ -764,56 +755,48 @@ def predict_audio(file):
         # AGGREGATE COMPLETE AUDIO
         # ====================================================
 
-        spoof_probabilities = [
+        # Filter active speech segments (RMS >= 0.002) so ambient silence doesn't skew results
+        speech_segments = [
+            res for res in segment_results
+            if res.get("rms", 1.0) >= 0.002
+        ]
+        if not speech_segments:
+            speech_segments = segment_results
+
+        speech_spoof_probs = [
             result["spoof_probability"]
-            for result in segment_results
+            for result in speech_segments
         ]
-
-
-        bonafide_probabilities = [
-            result["bonafide_probability"]
-            for result in segment_results
-        ]
-
-
-        # ----------------------------------------------------
-        # MOST SUSPICIOUS PART OF THE RECORDING
-        # ----------------------------------------------------
 
         max_spoof_probability = max(
-            spoof_probabilities
+            speech_spoof_probs
         )
 
-
         max_spoof_segment = max(
-            segment_results,
+            speech_segments,
             key=lambda x: x[
                 "spoof_probability"
             ]
         )
 
-
-        # ----------------------------------------------------
-        # AVERAGE SPOOF PROBABILITY
-        # ----------------------------------------------------
-
         average_spoof_probability = (
-            sum(spoof_probabilities)
+            sum(speech_spoof_probs)
             /
-            len(spoof_probabilities)
+            len(speech_spoof_probs)
         )
 
-
-        # ----------------------------------------------------
-        # COUNT SUSPICIOUS SEGMENTS (Calibrated threshold >= 0.35)
-        # ----------------------------------------------------
+        # Robust aggregation: blend peak speech window (40%) and average speech windows (60%)
+        # Prevents a single isolated breath pop or transient throat scratch from condemning an entire human call
+        if len(speech_spoof_probs) == 1:
+            overall_spoof_probability = max_spoof_probability
+        else:
+            overall_spoof_probability = 0.4 * max_spoof_probability + 0.6 * average_spoof_probability
 
         suspicious_segments = [
             result
             for result in segment_results
-            if result["spoof_probability"] >= 0.35
+            if result["spoof_probability"] >= 0.50
         ]
-
 
         suspicious_count = len(
             suspicious_segments
@@ -825,19 +808,10 @@ def predict_audio(file):
 
 
         # ====================================================
-        # FINAL DECISION
+        # FINAL DECISION (Calibrated threshold >= 0.50)
         # ====================================================
 
-        # IMPORTANT:
-        #
-        # If ANY segment has a spoof probability
-        # >= 0.35, flag the complete recording.
-        #
-        # This is designed for voice-cloning and acoustic replay detection
-        # where even a suspicious portion of a call
-        # should trigger investigation.
-
-        if max_spoof_probability >= 0.35:
+        if overall_spoof_probability >= 0.50:
 
             prediction = "spoof"
 
@@ -853,26 +827,26 @@ def predict_audio(file):
         if prediction == "spoof":
 
             confidence = (
-                max_spoof_probability
+                overall_spoof_probability
             )
 
         else:
 
             confidence = (
                 1.0 -
-                max_spoof_probability
+                overall_spoof_probability
             )
 
 
         # ====================================================
-        # RISK LEVEL (Calibrated thresholds: >= 0.65 HIGH, >= 0.35 MEDIUM)
+        # RISK LEVEL (Calibrated: >= 0.70 HIGH, >= 0.50 MEDIUM, < 0.50 LOW)
         # ====================================================
 
-        if max_spoof_probability >= 0.65:
+        if overall_spoof_probability >= 0.70:
 
             risk = "HIGH"
 
-        elif max_spoof_probability >= 0.35:
+        elif overall_spoof_probability >= 0.50:
 
             risk = "MEDIUM"
 
@@ -891,18 +865,25 @@ def predict_audio(file):
 
             "result": prediction,
 
+            "status": "likely_real" if prediction == "real" else ("high_risk" if risk == "HIGH" else "suspicious"),
+
             "confidence": round(
                 confidence,
                 4
             ),
 
             "spoof_probability": round(
+                overall_spoof_probability,
+                4
+            ),
+
+            "max_spoof_probability": round(
                 max_spoof_probability,
                 4
             ),
 
             "bonafide_probability": round(
-                1.0 - max_spoof_probability,
+                1.0 - overall_spoof_probability,
                 4
             ),
 
@@ -935,7 +916,7 @@ def predict_audio(file):
             "segments": segment_results,
 
             "impersonation_assessment": assess_impersonation_threat(
-                max_spoof_probability,
+                overall_spoof_probability,
                 segment_results,
                 getattr(file, "filename", "audio_sample.wav")
             )

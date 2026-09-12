@@ -53,18 +53,15 @@ def process_pcm_window(pcm_bytes):
     elif waveform.numel() > 64000:
         waveform = waveform[:64000]
 
-    peak = waveform.abs().max()
-    if peak > 0:
-        waveform = waveform / peak * 0.92
+    raw_rms = torch.sqrt(torch.mean(waveform ** 2)).item()
+    raw_peak = waveform.abs().max().item()
 
-    rms = torch.sqrt(torch.mean(waveform ** 2)).item()
-
-    if rms < 0.005:
+    if raw_rms < 0.002 and raw_peak < 0.015:
         # Ambient silence / room noise
-        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, rms, False, "SILENCE"
+        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE"
 
     sp, bp, risk, status, label, conf, detection_mode, forensics = evaluate_window_threat(waveform, sr=16000)
-    return sp, bp, risk, status, label, conf, rms, True, detection_mode
+    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode
 
 
 # ---------------------------------------------------------
@@ -111,16 +108,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 if is_speech:
                     recent_speech_scores.append(sp)
 
-                effective_sp = max(recent_speech_scores) if recent_speech_scores else sp
-                effective_risk = "HIGH" if effective_sp >= 0.65 else ("MEDIUM" if effective_sp >= 0.35 else "LOW")
-                effective_status = "high_risk" if effective_sp >= 0.65 else ("suspicious" if effective_sp >= 0.35 else "likely_real")
-                effective_label = "spoof" if effective_sp >= 0.35 else "real"
+                if len(recent_speech_scores) > 1:
+                    effective_sp = 0.4 * max(recent_speech_scores) + 0.6 * float(np.mean(recent_speech_scores))
+                elif recent_speech_scores:
+                    effective_sp = recent_speech_scores[0]
+                else:
+                    effective_sp = sp
 
-                if mode == "PHONE_REPLAY_AI":
+                effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
+                effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
+                effective_label = "spoof" if effective_sp >= 0.50 else "real"
+
+                if mode == "PHONE_REPLAY_AI" and effective_sp >= 0.50:
                     badge = "🚨 AI DEEPFAKE (PHONE REPLAY)"
-                elif effective_sp >= 0.65:
+                elif effective_sp >= 0.70:
                     badge = "🚨 AI DEEPFAKE"
-                elif effective_sp >= 0.35:
+                elif effective_sp >= 0.50:
                     badge = "⚠️  SUSPICIOUS"
                 else:
                     badge = "🛡️  BONAFIDE"
@@ -132,7 +135,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     flush=True
                 )
                 is_early_4s = True
-                impersonation_candidate = bool(effective_sp >= 0.35)
+                impersonation_candidate = bool(effective_sp >= 0.50)
                 await websocket.send_json({
                     "type": "prediction",
                     "spoof_probability": round(effective_sp, 4),
@@ -168,16 +171,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     if len(recent_speech_scores) > 3:
                         recent_speech_scores.pop(0)
 
-                effective_sp = max(recent_speech_scores) if recent_speech_scores else sp
-                effective_risk = "HIGH" if effective_sp >= 0.65 else ("MEDIUM" if effective_sp >= 0.35 else "LOW")
-                effective_status = "high_risk" if effective_sp >= 0.65 else ("suspicious" if effective_sp >= 0.35 else "likely_real")
-                effective_label = "spoof" if effective_sp >= 0.35 else "real"
+                if len(recent_speech_scores) > 1:
+                    effective_sp = 0.4 * max(recent_speech_scores) + 0.6 * float(np.mean(recent_speech_scores))
+                elif recent_speech_scores:
+                    effective_sp = recent_speech_scores[0]
+                else:
+                    effective_sp = sp
 
-                if mode == "PHONE_REPLAY_AI":
+                effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
+                effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
+                effective_label = "spoof" if effective_sp >= 0.50 else "real"
+
+                if mode == "PHONE_REPLAY_AI" and effective_sp >= 0.50:
                     badge = "🚨 AI DEEPFAKE (PHONE REPLAY)"
-                elif effective_sp >= 0.65:
+                elif effective_sp >= 0.70:
                     badge = "🚨 AI DEEPFAKE"
-                elif effective_sp >= 0.35:
+                elif effective_sp >= 0.50:
                     badge = "⚠️  SUSPICIOUS"
                 else:
                     badge = "🛡️  BONAFIDE"
@@ -189,7 +198,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     flush=True
                 )
                 is_early_4s = elapsed <= 4
-                impersonation_candidate = bool(effective_sp >= 0.35)
+                impersonation_candidate = bool(effective_sp >= 0.50)
                 await websocket.send_json({
                     "type": "prediction",
                     "spoof_probability": round(effective_sp, 4),
@@ -216,7 +225,7 @@ async def websocket_endpoint(websocket: WebSocket):
             sp, bp, risk, status, label, conf, rms, is_speech, mode = process_pcm_window(bytes(audio_buffer))
             session_spoof_probs.append(sp)
             analysis_count += 1
-            badge = "🚨 AI DEEPFAKE (PHONE REPLAY)" if mode == "PHONE_REPLAY_AI" else ("🚨 AI DEEPFAKE" if sp >= 0.65 else ("⚠️  SUSPICIOUS" if sp >= 0.35 else "🛡️  BONAFIDE"))
+            badge = "🚨 AI DEEPFAKE (PHONE REPLAY)" if (mode == "PHONE_REPLAY_AI" and sp >= 0.50) else ("🚨 AI DEEPFAKE" if sp >= 0.70 else ("⚠️  SUSPICIOUS" if sp >= 0.50 else "🛡️  BONAFIDE"))
             print(
                 f"[TAIL] {badge} | Spoof: {sp*100:5.1f}% | Conf: {conf*100:5.1f}% | RMS: {rms:.4f} | Mode: {mode}",
                 flush=True
@@ -225,8 +234,8 @@ async def websocket_endpoint(websocket: WebSocket):
         max_spoof = max(session_spoof_probs) if session_spoof_probs else 0.0
         overall_verdict = (
             "🚨 AI DEEPFAKE DETECTED (HIGH RISK)"
-            if max_spoof >= 0.65
-            else ("⚠️ SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.35 else "🛡️ GENUINE VOICE VERIFIED (LOW RISK)")
+            if max_spoof >= 0.70
+            else ("⚠️ SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.50 else "🛡️ GENUINE VOICE VERIFIED (LOW RISK)")
         )
         print("\n" + "=" * 65, flush=True)
         print("🎙️ LIVE AUDIO CONNECTION CLOSED", flush=True)

@@ -31,8 +31,8 @@ export function generatePdfReport({
   const contentWidth = pageWidth - margin * 2 // 178mm
 
   // Determine Risk Tier and Colors
-  const isHighRisk = riskScore >= 70 || (!isReal && riskScore >= 60)
-  const isMediumRisk = !isHighRisk && (riskScore >= 40 || !isReal)
+  const isHighRisk = !isReal && (riskScore >= 70 || riskScore >= 60)
+  const isMediumRisk = !isReal && !isHighRisk
 
   const riskTier = isReal
     ? { level: "LOW RISK", color: [22, 163, 74], bg: [240, 253, 244], border: [134, 239, 172] }

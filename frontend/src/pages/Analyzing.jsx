@@ -24,14 +24,15 @@ const checkSilence = async (blob) => {
 
 const getWebSocketUrl = () => {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  return `${protocol}//${window.location.hostname}:8000/audio-stream`
+  const host = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname
+  return `${protocol}//${host}:8000/audio-stream`
 }
 
 const normaliseReport = (data, fallbackSeconds) => {
   const spoofProbability = Number(data.spoof_probability ?? data.max_spoof_probability ?? 0)
-  const isSpoof = data.result ? data.result === "spoof" : spoofProbability >= 0.35
+  const isSpoof = data.result ? data.result === "spoof" : spoofProbability >= 0.50
   const confidence = Number(data.confidence ?? (isSpoof ? spoofProbability : 1 - spoofProbability))
-  const risk = data.risk ?? (spoofProbability >= 0.65 ? "HIGH" : spoofProbability >= 0.35 ? "MEDIUM" : "LOW")
+  const risk = data.risk ?? (spoofProbability >= 0.70 ? "HIGH" : spoofProbability >= 0.50 ? "MEDIUM" : "LOW")
 
   return {
     ...data,
@@ -116,16 +117,16 @@ function Analyzing() {
 
       const allReports = reportsRef.current || []
       const bestSpoof = earlyAlertData?.spoof_probability ?? (allReports.length > 0 ? Math.max(...allReports.map((r) => r.spoof_probability)) : 0.85)
-      const isSpoof = bestSpoof >= 0.35
-      const finalRisk = bestSpoof >= 0.65 ? "HIGH" : bestSpoof >= 0.35 ? "MEDIUM" : "LOW"
+      const isSpoof = bestSpoof >= 0.50
+      const finalRisk = bestSpoof >= 0.70 ? "HIGH" : bestSpoof >= 0.50 ? "MEDIUM" : "LOW"
 
       const cutResult = {
         result: isSpoof ? "spoof" : "real",
-        status: isSpoof ? (bestSpoof >= 0.65 ? "high_risk" : "suspicious") : "likely_real",
+        status: isSpoof ? (bestSpoof >= 0.70 ? "high_risk" : "suspicious") : "likely_real",
         spoof_probability: bestSpoof,
         max_spoof_probability: bestSpoof,
         average_spoof_probability: bestSpoof,
-        confidence: bestSpoof,
+        confidence: isSpoof ? bestSpoof : (1.0 - bestSpoof),
         risk: finalRisk,
         callCutOffEarly: true,
         interceptedAtSecond: earlyAlertData?.elapsed_seconds ?? 4,
@@ -133,7 +134,7 @@ function Analyzing() {
         isImpersonationAttack: relationship === "yes",
         early_4s_flagged: true,
         total_segments: allReports.length || 1,
-        suspicious_segments: Math.max(1, allReports.filter((r) => r.spoof_probability >= 0.35).length),
+        suspicious_segments: Math.max(1, allReports.filter((r) => r.spoof_probability >= 0.50).length),
         segments:
           allReports.length > 0
             ? allReports.map((r, i) => ({
@@ -190,15 +191,16 @@ function Analyzing() {
 
         const maxSpoofProb = Math.max(...targetReports.map((r) => r.spoof_probability))
         const avgSpoofProb = targetReports.reduce((s, r) => s + r.spoof_probability, 0) / targetReports.length
-        const isSpoof = maxSpoofProb >= 0.35
-        const finalConfidence = isSpoof ? maxSpoofProb : (1.0 - maxSpoofProb)
-        const finalRisk = maxSpoofProb >= 0.65 ? "HIGH" : maxSpoofProb >= 0.35 ? "MEDIUM" : "LOW"
-        const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.35).length
+        const overallScore = targetReports.length > 1 ? (0.4 * maxSpoofProb + 0.6 * avgSpoofProb) : maxSpoofProb
+        const isSpoof = overallScore >= 0.50
+        const finalConfidence = isSpoof ? overallScore : (1.0 - overallScore)
+        const finalRisk = overallScore >= 0.70 ? "HIGH" : overallScore >= 0.50 ? "MEDIUM" : "LOW"
+        const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.50).length
 
         const aggregatedResult = {
           result: isSpoof ? "spoof" : "real",
-          status: isSpoof ? (maxSpoofProb >= 0.65 ? "high_risk" : "suspicious") : "likely_real",
-          spoof_probability: maxSpoofProb,
+          status: isSpoof ? (overallScore >= 0.70 ? "high_risk" : "suspicious") : "likely_real",
+          spoof_probability: overallScore,
           max_spoof_probability: maxSpoofProb,
           average_spoof_probability: avgSpoofProb,
           confidence: finalConfidence,
@@ -280,7 +282,7 @@ function Analyzing() {
             if (
               !earlyAlertTriggeredRef.current &&
               report.elapsed_seconds >= 6 &&
-              (report.spoof_probability >= 0.35 || report.risk === "MEDIUM" || report.risk === "HIGH")
+              (report.risk === "HIGH" || report.risk === "MEDIUM" || report.spoof_probability >= 0.50)
             ) {
               earlyAlertTriggeredRef.current = true
               setEarlyAlertData(report)

@@ -424,18 +424,18 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                         </span>
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                            riskScore >= 70
+                            isReal
+                              ? "bg-[#d9efea] text-[#28756f]"
+                              : (backendData?.risk === "HIGH" || riskScore >= 70)
                               ? "bg-[#f5e4e9] text-[#8d4257]"
-                              : riskScore >= 40
-                              ? "bg-[#f4eadf] text-[#92674b]"
-                              : "bg-[#d9efea] text-[#28756f]"
+                              : "bg-[#f4eadf] text-[#92674b]"
                           }`}
                         >
-                          {riskScore >= 70
+                          {isReal
+                            ? "Low Risk"
+                            : (backendData?.risk === "HIGH" || riskScore >= 70)
                             ? "High Risk"
-                            : riskScore >= 40
-                            ? "Medium Risk"
-                            : "Low Risk"}
+                            : "Medium Risk"}
                         </span>
                       </div>
                       <h3 className="mt-1.5 text-base font-bold text-slate-900">
@@ -511,14 +511,14 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                   Risk score & Threat Level
                 </p>
                 <div className="mt-5 flex items-center gap-6">
-                  <div
-                    className="relative grid h-36 w-36 shrink-0 place-items-center rounded-full"
-                    style={{
-                      background: `conic-gradient(#e0644e 0deg ${
-                        report.risk * 3.6
-                      }deg, #edf0f5 ${report.risk * 3.6}deg 360deg)`,
-                    }}
-                  >
+                    <div
+                      className="relative grid h-36 w-36 shrink-0 place-items-center rounded-full"
+                      style={{
+                        background: `conic-gradient(${
+                          isReal ? "#10b981" : report.risk >= 70 ? "#e0644e" : "#f59e0b"
+                        } 0deg ${report.risk * 3.6}deg, #edf0f5 ${report.risk * 3.6}deg 360deg)`,
+                      }}
+                    >
                     <div className="grid h-[7.3rem] w-[7.3rem] place-items-center rounded-full bg-white">
                       <div className="text-center">
                         <p className="font-mono text-4xl font-medium tracking-[-0.08em] text-[#202b43]">
