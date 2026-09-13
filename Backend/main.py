@@ -1,3 +1,10 @@
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from audio_routes import router as audio_router
 
@@ -49,19 +56,20 @@ def process_pcm_window(pcm_bytes):
 
     # Standardize to 4-second input (64,000 samples)
     if waveform.numel() < 64000:
-        waveform = F.pad(waveform, (0, 64000 - waveform.numel()))
+        repeat_count = int(np.ceil(64000 / max(1, waveform.numel())))
+        waveform = waveform.repeat(repeat_count)[:64000]
     elif waveform.numel() > 64000:
         waveform = waveform[:64000]
 
     raw_rms = torch.sqrt(torch.mean(waveform ** 2)).item()
     raw_peak = waveform.abs().max().item()
 
-    if raw_rms < 0.002 and raw_peak < 0.015:
+    if raw_rms < 0.005 and raw_peak < 0.025:
         # Ambient silence / room noise
-        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE"
+        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", {}
 
     sp, bp, risk, status, label, conf, detection_mode, forensics = evaluate_window_threat(waveform, sr=16000)
-    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode
+    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode, forensics
 
 
 # ---------------------------------------------------------
@@ -73,7 +81,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     print("\n" + "=" * 65, flush=True)
-    print("🎙️ LIVE MICROPHONE STREAM OPENED", flush=True)
+    print("[MICROPHONE] LIVE STREAM OPENED", flush=True)
     print("Mode: Real-time Continuous Sliding Evaluation (4s Window / 2s Hop)", flush=True)
     print("=" * 65, flush=True)
 
@@ -92,6 +100,9 @@ async def websocket_endpoint(websocket: WebSocket):
     analysis_count = 0
     session_spoof_probs = []
     recent_speech_scores = []
+    session_max_spoof = 0.0
+    threat_latched = False
+    latched_mode = "LIVE_HUMAN"
 
     try:
         while True:
@@ -101,37 +112,46 @@ async def websocket_endpoint(websocket: WebSocket):
             # Early Feedback: evaluate first 2s immediately if user just started speaking
             if analysis_count == 0 and len(audio_buffer) >= HOP_BYTES and len(audio_buffer) < WINDOW_BYTES:
                 chunk_bytes = bytes(audio_buffer[:HOP_BYTES])
-                sp, bp, risk, status, label, conf, rms, is_speech, mode = process_pcm_window(chunk_bytes)
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics = process_pcm_window(chunk_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
 
-                if is_speech:
-                    recent_speech_scores.append(sp)
+                # Update stateful threat latch
+                if sp >= 0.65 or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
+                    threat_latched = True
+                    latched_mode = mode if mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    session_max_spoof = max(session_max_spoof, sp)
 
-                if len(recent_speech_scores) > 1:
-                    effective_sp = 0.4 * max(recent_speech_scores) + 0.6 * float(np.mean(recent_speech_scores))
-                elif recent_speech_scores:
-                    effective_sp = recent_speech_scores[0]
+                if threat_latched:
+                    effective_sp = max(session_max_spoof, sp, 0.76)
+                    effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    effective_risk = "HIGH"
+                    effective_status = "high_risk"
+                    effective_label = "spoof"
+                    badge = "[ALERT] AI DEEPFAKE (PHONE REPLAY)" if effective_mode == "PHONE_REPLAY_AI" else "[ALERT] AI DEEPFAKE"
                 else:
-                    effective_sp = sp
+                    if is_speech:
+                        recent_speech_scores.append(sp)
 
-                effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
-                effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
-                effective_label = "spoof" if effective_sp >= 0.50 else "real"
+                    if len(recent_speech_scores) > 1:
+                        effective_sp = 0.40 * max(recent_speech_scores) + 0.60 * float(np.mean(recent_speech_scores))
+                    elif recent_speech_scores:
+                        effective_sp = recent_speech_scores[0]
+                    else:
+                        effective_sp = sp
 
-                if mode == "PHONE_REPLAY_AI" and effective_sp >= 0.50:
-                    badge = "🚨 AI DEEPFAKE (PHONE REPLAY)"
-                elif effective_sp >= 0.70:
-                    badge = "🚨 AI DEEPFAKE"
-                elif effective_sp >= 0.50:
-                    badge = "⚠️  SUSPICIOUS"
-                else:
-                    badge = "🛡️  BONAFIDE"
+                    effective_mode = "LIVE_HUMAN"
+                    effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
+                    effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
+                    effective_label = "spoof" if effective_sp >= 0.50 else "real"
+                    badge = "[WARN]  SUSPICIOUS" if effective_sp >= 0.50 else "[OK]    BONAFIDE"
 
                 speech_tag = "SPEECH" if is_speech else "SILENCE"
+                rep_sc = forensics.get("replay_score", 0)
+                pros_sc = forensics.get("prosody_score", 0)
                 print(
                     f"[02s] {badge} | Spoof: {effective_sp*100:5.1f}% (raw {sp*100:5.1f}%) | Conf: {conf*100:5.1f}% | "
-                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {mode}",
+                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f} | pros: {pros_sc:.2f}",
                     flush=True
                 )
                 is_early_4s = True
@@ -143,7 +163,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "risk": effective_risk,
                     "result": effective_label,
                     "status": effective_status,
-                    "detection_mode": mode,
+                    "detection_mode": effective_mode,
                     "elapsed_seconds": 2,
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
@@ -161,40 +181,51 @@ async def websocket_endpoint(websocket: WebSocket):
                 window_bytes = bytes(audio_buffer[:WINDOW_BYTES])
                 del audio_buffer[:HOP_BYTES]
 
-                sp, bp, risk, status, label, conf, rms, is_speech, mode = process_pcm_window(window_bytes)
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics = process_pcm_window(window_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
                 elapsed = analysis_count * HOP_SECONDS
 
-                if is_speech:
-                    recent_speech_scores.append(sp)
-                    if len(recent_speech_scores) > 3:
-                        recent_speech_scores.pop(0)
+                # Update stateful threat latch
+                if sp >= 0.65 or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
+                    threat_latched = True
+                    latched_mode = mode if mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    session_max_spoof = max(session_max_spoof, sp)
 
-                if len(recent_speech_scores) > 1:
-                    effective_sp = 0.4 * max(recent_speech_scores) + 0.6 * float(np.mean(recent_speech_scores))
-                elif recent_speech_scores:
-                    effective_sp = recent_speech_scores[0]
+                if threat_latched:
+                    # Attack confirmed on this line! Hold alert state rock-solid without flickering.
+                    effective_sp = max(session_max_spoof, sp, 0.76)
+                    effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    effective_risk = "HIGH"
+                    effective_status = "high_risk"
+                    effective_label = "spoof"
+                    badge = "[ALERT] AI DEEPFAKE (PHONE REPLAY)" if effective_mode == "PHONE_REPLAY_AI" else "[ALERT] AI DEEPFAKE"
                 else:
-                    effective_sp = sp
+                    # Genuine live speech evaluation
+                    if is_speech:
+                        recent_speech_scores.append(sp)
+                        if len(recent_speech_scores) > 3:
+                            recent_speech_scores.pop(0)
 
-                effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
-                effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
-                effective_label = "spoof" if effective_sp >= 0.50 else "real"
+                    if len(recent_speech_scores) > 1:
+                        effective_sp = 0.40 * max(recent_speech_scores) + 0.60 * float(np.mean(recent_speech_scores))
+                    elif recent_speech_scores:
+                        effective_sp = recent_speech_scores[0]
+                    else:
+                        effective_sp = sp
 
-                if mode == "PHONE_REPLAY_AI" and effective_sp >= 0.50:
-                    badge = "🚨 AI DEEPFAKE (PHONE REPLAY)"
-                elif effective_sp >= 0.70:
-                    badge = "🚨 AI DEEPFAKE"
-                elif effective_sp >= 0.50:
-                    badge = "⚠️  SUSPICIOUS"
-                else:
-                    badge = "🛡️  BONAFIDE"
+                    effective_mode = "LIVE_HUMAN"
+                    effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
+                    effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
+                    effective_label = "spoof" if effective_sp >= 0.50 else "real"
+                    badge = "[WARN]  SUSPICIOUS" if effective_sp >= 0.50 else "[OK]    BONAFIDE"
 
                 speech_tag = "SPEECH" if is_speech else "SILENCE"
+                rep_sc = forensics.get("replay_score", 0)
+                pros_sc = forensics.get("prosody_score", 0)
                 print(
                     f"[{elapsed:02d}s] {badge} | Spoof: {effective_sp*100:5.1f}% (raw {sp*100:5.1f}%) | Conf: {conf*100:5.1f}% | "
-                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {mode}",
+                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f} | pros: {pros_sc:.2f}",
                     flush=True
                 )
                 is_early_4s = elapsed <= 4
@@ -206,7 +237,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "risk": effective_risk,
                     "result": effective_label,
                     "status": effective_status,
-                    "detection_mode": mode,
+                    "detection_mode": effective_mode,
                     "elapsed_seconds": elapsed,
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
@@ -220,12 +251,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
     except WebSocketDisconnect:
+        # Save last recorded live audio to disk for forensic debugging
+        if audio_buffer:
+            try:
+                from pathlib import Path
+                raw_np = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                save_path = Path(__file__).resolve().parent.parent / "last_live_mic.wav"
+                sf.write(str(save_path), raw_np, SAMPLE_RATE)
+                print(f"\n[DEBUG] Saved live microphone audio to {save_path.name} ({len(raw_np)/SAMPLE_RATE:.2f}s)", flush=True)
+            except Exception as e_save:
+                pass
+
         # Process any remaining speech tail if at least 1 second of audio remains
         if len(audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE:
-            sp, bp, risk, status, label, conf, rms, is_speech, mode = process_pcm_window(bytes(audio_buffer))
+            sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics = process_pcm_window(bytes(audio_buffer))
             session_spoof_probs.append(sp)
             analysis_count += 1
-            badge = "🚨 AI DEEPFAKE (PHONE REPLAY)" if (mode == "PHONE_REPLAY_AI" and sp >= 0.50) else ("🚨 AI DEEPFAKE" if sp >= 0.70 else ("⚠️  SUSPICIOUS" if sp >= 0.50 else "🛡️  BONAFIDE"))
+            badge = "[ALERT] AI DEEPFAKE (PHONE REPLAY)" if (mode == "PHONE_REPLAY_AI" and sp >= 0.50) else ("[ALERT] AI DEEPFAKE" if sp >= 0.70 else ("[WARN]  SUSPICIOUS" if sp >= 0.50 else "[OK]    BONAFIDE"))
             print(
                 f"[TAIL] {badge} | Spoof: {sp*100:5.1f}% | Conf: {conf*100:5.1f}% | RMS: {rms:.4f} | Mode: {mode}",
                 flush=True
@@ -233,12 +275,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
         max_spoof = max(session_spoof_probs) if session_spoof_probs else 0.0
         overall_verdict = (
-            "🚨 AI DEEPFAKE DETECTED (HIGH RISK)"
+            "[ALERT] AI DEEPFAKE DETECTED (HIGH RISK)"
             if max_spoof >= 0.70
-            else ("⚠️ SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.50 else "🛡️ GENUINE VOICE VERIFIED (LOW RISK)")
+            else ("[WARN] SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.50 else "[OK] GENUINE VOICE VERIFIED (LOW RISK)")
         )
         print("\n" + "=" * 65, flush=True)
-        print("🎙️ LIVE AUDIO CONNECTION CLOSED", flush=True)
+        print("[MICROPHONE] LIVE AUDIO CONNECTION CLOSED", flush=True)
         print(f"Total Windows Evaluated: {analysis_count}", flush=True)
         print(f"Max Spoof Probability:   {max_spoof*100:.1f}%", flush=True)
         print(f"Session Verdict:         {overall_verdict}", flush=True)

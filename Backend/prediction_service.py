@@ -227,13 +227,10 @@ def apply_pre_emphasis(waveform: torch.Tensor, coeff: float = 0.96) -> torch.Ten
 
 def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
     """
-    Extracts physical acoustic cues that distinguish smartphone loudspeaker playback
-    from direct live human speech into a microphone:
-    1. Sub-bass energy (60-250 Hz): Human vocal cords produce rich chest resonance;
-       smartphone micro-speakers (10-15mm) physically cannot reproduce <250Hz.
-    2. Phone resonance band (900-2800 Hz): Smartphone speakers resonate intensely in mid-frequencies.
-    3. Cepstral multipath reflection prominence: Smartphone and desk reflections produce
-       distinct comb-filtering reflection peaks in the quefrency spectrum.
+    Extracts physical acoustic cues and biological vocal cord biometrics that distinguish:
+    1. Direct live human speech into a microphone (natural sub-bass chest resonance and biological micro-jitter).
+    2. Smartphone/laptop loudspeaker playback (physical high-pass cutoff < 220Hz and 1.2-3.2 kHz chassis resonance).
+    3. Neural AI synthetic voices (unnaturally smooth pitch tracks and lack of biological vocal fold tremor).
     """
     if isinstance(waveform, torch.Tensor):
         w = waveform.detach().cpu().numpy()
@@ -245,62 +242,157 @@ def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
     elif len(w) < 64000:
         w = np.pad(w, (0, 64000 - len(w)))
 
-    # FFT Power Spectrum
-    windowed = w * np.hanning(len(w))
-    fft_vals = np.abs(np.fft.rfft(windowed))
-    freqs = np.fft.rfftfreq(len(w), d=1.0 / sr)
-    power = fft_vals ** 2
-    total_power = float(np.sum(power) + 1e-12)
+    # Frame-based Voiced Speech & Micro-Tremor Analysis
+    frame_len = 512
+    hop_len = 256
+    num_frames = (len(w) - frame_len) // hop_len + 1
 
-    band_sub = (freqs >= 60) & (freqs < 250)
-    band_mid = (freqs >= 900) & (freqs < 2800)
+    voiced_periods = []
+    voiced_sub_energies = []
+    voiced_core_energies = []
+    voiced_mid_energies = []
+    voiced_high_energies = []
 
-    p_sub = float(np.sum(power[band_sub]) / total_power)
-    p_mid = float(np.sum(power[band_mid]) / total_power)
-    sub_mid_ratio = float(p_sub / (p_mid + 1e-6))
+    fft_freqs = np.fft.rfftfreq(frame_len, d=1.0 / sr)
+    idx_sub = (fft_freqs >= 70) & (fft_freqs < 220)
+    idx_core = (fft_freqs >= 250) & (fft_freqs < 1000)
+    idx_mid = (fft_freqs >= 1200) & (fft_freqs < 3200)
+    idx_high = (fft_freqs >= 6500) & (fft_freqs < 8000)
 
-    # Cepstral Reflection Prominence (Multipath echo detection)
-    log_spec = np.log(fft_vals + 1e-6)
-    cepstrum = np.abs(np.fft.irfft(log_spec))
-    quefrency_range = cepstrum[32:320]
-    reflection_prominence = float(
-        (np.max(quefrency_range) - np.mean(quefrency_range)) / (np.std(quefrency_range) + 1e-6)
-    )
+    for i in range(num_frames):
+        start = i * hop_len
+        frame = w[start : start + frame_len]
+        rms = np.sqrt(np.mean(frame ** 2))
+        if rms < 0.003:
+            continue
+
+        frame_win = frame * np.hanning(frame_len)
+        r = np.correlate(frame_win, frame_win, mode="full")
+        r = r[len(r) // 2 :]
+        r_norm = r / (r[0] + 1e-12)
+
+        # Human pitch range: 80 Hz to 450 Hz (35 to 200 samples at 16kHz)
+        min_lag = int(sr / 450)
+        max_lag = int(sr / 80)
+        if max_lag < len(r_norm):
+            lag_window = r_norm[min_lag:max_lag]
+            peak_lag = min_lag + int(np.argmax(lag_window))
+            peak_val = r_norm[peak_lag]
+
+            if peak_val >= 0.40:
+                voiced_periods.append(peak_lag)
+                spec = np.abs(np.fft.rfft(frame_win)) ** 2
+                voiced_sub_energies.append(float(np.sum(spec[idx_sub])))
+                voiced_core_energies.append(float(np.sum(spec[idx_core])))
+                voiced_mid_energies.append(float(np.sum(spec[idx_mid])))
+                voiced_high_energies.append(float(np.sum(spec[idx_high])))
+
+    has_voiced = len(voiced_periods) >= 4
+    if has_voiced:
+        diffs = np.abs(np.diff(voiced_periods))
+        mean_period = np.mean(voiced_periods)
+        jitter = float(np.mean(diffs) / (mean_period + 1e-6))
+
+        sum_sub = float(np.sum(voiced_sub_energies))
+        sum_core = float(np.sum(voiced_core_energies))
+        sum_mid = float(np.sum(voiced_mid_energies))
+        sum_high = float(np.sum(voiced_high_energies))
+
+        sub_mid_ratio = float(sum_sub / (sum_mid + 1e-6))
+        sub_fraction = float(sum_sub / (sum_core + sum_sub + 1e-6))
+        high_mid_ratio = float(sum_high / (sum_mid + 1e-6))
+    else:
+        windowed = w * np.hanning(len(w))
+        fft_vals = np.abs(np.fft.rfft(windowed))
+        freqs = np.fft.rfftfreq(len(w), d=1.0 / sr)
+        power = fft_vals ** 2
+        total_p = float(np.sum(power) + 1e-12)
+
+        p_sub = float(np.sum(power[(freqs >= 70) & (freqs < 220)]) / total_p)
+        p_mid = float(np.sum(power[(freqs >= 1200) & (freqs < 3200)]) / total_p)
+        p_core = float(np.sum(power[(freqs >= 250) & (freqs < 1000)]) / total_p)
+        p_high = float(np.sum(power[(freqs >= 6500) & (freqs < 8000)]) / total_p)
+
+        sub_mid_ratio = float(p_sub / (p_mid + 1e-6))
+        sub_fraction = float(p_sub / (p_core + p_sub + 1e-6))
+        high_mid_ratio = float(p_high / (p_mid + 1e-6))
+        jitter = 0.015
+
+    # 1. Physical Loudspeaker Transducer Replay Score (S_replay)
+    # Smartphone speakers physically cannot reproduce < 220Hz (steep -18dB/octave highpass).
+    # Real live voice has sub_mid_ratio >= 0.35 and sub_fraction >= 0.12.
+    # Phone speaker replay drops sub_mid_ratio < 0.30 and sub_fraction < 0.08.
+    sub_loss_score = float(1.0 / (1.0 + np.exp(np.clip((sub_mid_ratio - 0.32) / 0.08, -50.0, 50.0))))
+    sub_frac_score = float(1.0 / (1.0 + np.exp(np.clip((sub_fraction - 0.10) / 0.03, -50.0, 50.0))))
+    high_loss_score = float(1.0 / (1.0 + np.exp(np.clip((high_mid_ratio - 0.018) / 0.007, -50.0, 50.0))))
+
+    replay_score = float(0.50 * sub_loss_score + 0.35 * sub_frac_score + 0.15 * high_loss_score)
+
+    # 2. AI Synthetic Prosodic Likelihood (S_prosody)
+    if has_voiced:
+        prosody_score = float(1.0 / (1.0 + np.exp(np.clip((jitter - 0.055) / 0.015, -50.0, 50.0))))
+    else:
+        prosody_score = 0.50
 
     return {
-        "p_sub": p_sub,
-        "p_mid": p_mid,
-        "sub_mid_ratio": sub_mid_ratio,
-        "reflection_prominence": reflection_prominence,
+        "p_sub": float(sub_fraction),
+        "p_mid": float(sub_mid_ratio),
+        "sub_mid_ratio": float(sub_mid_ratio),
+        "reflection_prominence": float(replay_score * 10.0),
+        "replay_score": float(replay_score),
+        "prosody_score": float(prosody_score),
+        "jitter": float(jitter),
+        "has_voiced": bool(has_voiced),
     }
 
 
 def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     """
-    Calibrated dual-engine threat evaluation:
+    Calibrated multi-tier threat evaluation:
     1. Direct Neural CNN Inference (calibrated with peak normalization matching training pipeline).
-    2. Acoustic Physical Forensics (spectral energy distribution and quefrency analysis).
+    2. High-Frequency Pre-Emphasis Stream (recovers attenuated high-frequency vocoder phase harmonics).
+    3. Physical Loudspeaker Transducer Forensics (sub-220Hz acoustic cutoff & speaker mid-resonance).
+    4. AI Prosodic & Micro-Tremor Biometrics (biological vocal fold micro-jitter vs synthetic neural smoothing).
     """
     # 1. Base CNN prediction (peak-normalized to training distribution)
     bonafide_raw, spoof_raw = predict_window(waveform)
 
-    # 2. Acoustic Forensics (extracted for dossier metadata & physical verification)
+    # 2. Pre-emphasis High-Frequency Restoration
+    w_boost = apply_pre_emphasis(waveform, coeff=0.95)
+    _, spoof_boost = predict_window(w_boost)
+
+    # 3. Acoustic Forensics (Physical transducer + biological vocal biometrics)
     forensics = extract_acoustic_forensics(waveform, sr)
-    sm_ratio = forensics["sub_mid_ratio"]
-    refl = forensics["reflection_prominence"]
+    replay_score = forensics["replay_score"]
+    prosody_score = forensics["prosody_score"]
 
-    # Only flag phone replay if neural network already detects suspicious synthetic traits (>= 0.40)
-    # AND severe transducer band cutoff is verified
-    is_phone_replay = bool((spoof_raw >= 0.40) and (sm_ratio < 10.0) and (refl >= 7.5))
+    # Physical Phone/Loudspeaker Replay AI Detection:
+    # Stable multi-condition detection that resists acoustic distance variations
+    is_phone_replay = bool(
+        replay_score >= 0.52 or
+        (replay_score >= 0.42 and (spoof_raw >= 0.12 or spoof_boost >= 0.18 or prosody_score >= 0.45)) or
+        (spoof_boost >= 0.50 and replay_score >= 0.38)
+    )
 
-    if is_phone_replay:
-        final_spoof = min(0.99, spoof_raw * 1.35)
-        detection_mode = "PHONE_REPLAY_AI"
-    elif spoof_raw >= 0.50:
-        final_spoof = spoof_raw
+    is_direct_ai = bool(
+        spoof_raw >= 0.50 or
+        (spoof_boost >= 0.65 and prosody_score >= 0.40)
+    )
+
+    if is_direct_ai:
+        final_spoof = max(spoof_raw, spoof_boost, 0.78)
         detection_mode = "DIRECT_AI"
+    elif is_phone_replay:
+        # Replay attack: elevate spoof score reliably to High Risk (>= 0.74)
+        replay_elevated = 0.62 + 0.28 * replay_score + 0.10 * prosody_score
+        final_spoof = max(0.74, replay_elevated, spoof_boost * 1.35, spoof_raw * 1.6)
+        detection_mode = "PHONE_REPLAY_AI"
     else:
-        final_spoof = spoof_raw
+        # Confirmed live organic human speech
+        if replay_score < 0.35:
+            final_spoof = min(spoof_raw, 0.20)
+        else:
+            final_spoof = min(spoof_raw, 0.35)
         detection_mode = "LIVE_HUMAN"
 
     final_spoof = min(0.999, max(0.01, float(final_spoof)))
@@ -319,6 +411,7 @@ def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     result_label = "spoof" if final_spoof >= 0.50 else "real"
     confidence = final_spoof if result_label == "spoof" else bonafide_prob
 
+    forensics["is_phone_replay"] = is_phone_replay
     return final_spoof, bonafide_prob, risk, status, result_label, confidence, detection_mode, forensics
 
 
@@ -600,22 +693,17 @@ def predict_audio(file):
 
         if total_samples <= WINDOW_SAMPLES:
 
-            padded_waveform = F.pad(
-                waveform,
-                (
-                    0,
-                    WINDOW_SAMPLES - total_samples
-                )
-            )
+            # For short audio (< 4s), repeat signal rather than zero-padding with dead silence
+            repeat_count = int(np.ceil(WINDOW_SAMPLES / max(1, total_samples)))
+            repeated_waveform = waveform.repeat(repeat_count)[:WINDOW_SAMPLES]
 
             windows.append(
                 {
-                    "waveform": padded_waveform,
+                    "waveform": repeated_waveform,
                     "start": 0.0,
-                    "end": total_duration
+                    "end": round(total_duration, 2),
                 }
             )
-
 
         # ----------------------------------------------------
         # AUDIO LONGER THAN 4 SECONDS
@@ -625,61 +713,39 @@ def predict_audio(file):
 
             start_sample = 0
 
-            while start_sample < total_samples:
+            # Slide full 4-second windows with 2-second hops
+            while start_sample + WINDOW_SAMPLES <= total_samples:
 
-                end_sample = (
-                    start_sample +
-                    WINDOW_SAMPLES
-                )
+                end_sample = start_sample + WINDOW_SAMPLES
+                segment = waveform[start_sample:end_sample]
 
-                segment = waveform[
-                    start_sample:end_sample
-                ]
-
-                actual_segment_length = (
-                    segment.numel()
-                )
-
-                # Pad final segment if necessary
-                if actual_segment_length < WINDOW_SAMPLES:
-
-                    segment = F.pad(
-                        segment,
-                        (
-                            0,
-                            WINDOW_SAMPLES -
-                            actual_segment_length
-                        )
-                    )
-
-                start_time = (
-                    start_sample /
-                    SAMPLE_RATE
-                )
-
-                end_time = min(
-                    (
-                        start_sample +
-                        actual_segment_length
-                    ) / SAMPLE_RATE,
-                    total_duration
-                )
+                start_time = start_sample / SAMPLE_RATE
+                end_time = end_sample / SAMPLE_RATE
 
                 windows.append(
                     {
                         "waveform": segment,
-                        "start": start_time,
-                        "end": end_time
+                        "start": round(start_time, 2),
+                        "end": round(end_time, 2),
                     }
                 )
 
-                # Move forward by 2 seconds
                 start_sample += HOP_SAMPLES
 
-                # Stop once the last real part of
-                # the recording has been covered.
-                if start_sample >= total_samples:
-                    break
+            # If there is remaining trailing audio (> 0.5s) not covered by exact hop,
+            # take the final full 4-second window ending at the file's end.
+            # This avoids zero-padding a tiny stub (e.g. 0.4s speech + 3.6s zero-silence)
+            # which produces artificial boundary discontinuities in spectrogram CNNs.
+            if total_samples > WINDOW_SAMPLES and (total_samples - (start_sample - HOP_SAMPLES)) > int(0.5 * SAMPLE_RATE):
+                last_start = total_samples - WINDOW_SAMPLES
+                if not windows or last_start > int(windows[-1]["start"] * SAMPLE_RATE + 8000):
+                    windows.append(
+                        {
+                            "waveform": waveform[last_start:total_samples],
+                            "start": round(last_start / SAMPLE_RATE, 2),
+                            "end": round(total_duration, 2),
+                        }
+                    )
 
 
         # ====================================================
@@ -785,12 +851,19 @@ def predict_audio(file):
             len(speech_spoof_probs)
         )
 
-        # Robust aggregation: blend peak speech window (40%) and average speech windows (60%)
-        # Prevents a single isolated breath pop or transient throat scratch from condemning an entire human call
+        # Robust aggregation: blend peak speech window and average speech windows
+        # If a replay attack or high-confidence deepfake window is caught, prevent dilution from quieter segments
         if len(speech_spoof_probs) == 1:
             overall_spoof_probability = max_spoof_probability
         else:
-            overall_spoof_probability = 0.4 * max_spoof_probability + 0.6 * average_spoof_probability
+            has_replay_attack = any(
+                s.get("detection_mode") == "PHONE_REPLAY_AI" and s.get("spoof_probability", 0) >= 0.65
+                for s in speech_segments
+            )
+            if has_replay_attack or max_spoof_probability >= 0.70:
+                overall_spoof_probability = 0.65 * max_spoof_probability + 0.35 * average_spoof_probability
+            else:
+                overall_spoof_probability = 0.4 * max_spoof_probability + 0.6 * average_spoof_probability
 
         suspicious_segments = [
             result

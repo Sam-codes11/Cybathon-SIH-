@@ -28,6 +28,19 @@ async def analyze_audio(file: UploadFile = File(...)):
     result = predict_audio(converted)
     converted.file.close()
 
+    try:
+        import shutil
+        save_copy = os.path.join(os.path.dirname(__file__), "..", "last_uploaded_audio.wav")
+        shutil.copyfile(wav_path, save_copy)
+    except Exception as e:
+        pass
+
+    print(
+        f"\n[UPLOAD] File: {file.filename} | Spoof: {result.get('spoof_probability', 0)*100:.1f}% | "
+        f"Risk: {result.get('risk')} | Result: {result.get('result')} | Mode: {result.get('threat_classification', {}).get('predicted_attack_vector')}",
+        flush=True
+    )
+
     os.remove(webm_path)
     os.remove(wav_path)
 

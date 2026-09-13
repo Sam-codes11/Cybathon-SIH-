@@ -191,11 +191,15 @@ function Analyzing() {
 
         const maxSpoofProb = Math.max(...targetReports.map((r) => r.spoof_probability))
         const avgSpoofProb = targetReports.reduce((s, r) => s + r.spoof_probability, 0) / targetReports.length
-        const overallScore = targetReports.length > 1 ? (0.4 * maxSpoofProb + 0.6 * avgSpoofProb) : maxSpoofProb
+        const hasReplayThreat = targetReports.some((r) => r.detection_mode === "PHONE_REPLAY_AI" || r.risk === "HIGH" || r.spoof_probability >= 0.65)
+        const overallScore = targetReports.length > 1
+          ? (hasReplayThreat ? (0.70 * maxSpoofProb + 0.30 * avgSpoofProb) : (0.40 * maxSpoofProb + 0.60 * avgSpoofProb))
+          : maxSpoofProb
         const isSpoof = overallScore >= 0.50
         const finalConfidence = isSpoof ? overallScore : (1.0 - overallScore)
         const finalRisk = overallScore >= 0.70 ? "HIGH" : overallScore >= 0.50 ? "MEDIUM" : "LOW"
         const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.50).length
+        const primaryMode = targetReports.find((r) => r.detection_mode === "PHONE_REPLAY_AI")?.detection_mode || (isSpoof ? "DIRECT_AI" : "LIVE_HUMAN")
 
         const aggregatedResult = {
           result: isSpoof ? "spoof" : "real",
@@ -205,6 +209,7 @@ function Analyzing() {
           average_spoof_probability: avgSpoofProb,
           confidence: finalConfidence,
           risk: finalRisk,
+          detection_mode: primaryMode,
           total_segments: allReports.length,
           suspicious_segments: suspiciousCount,
           callerRelationship: callerRelationshipRef.current,
@@ -217,6 +222,7 @@ function Analyzing() {
             spoof_probability: r.spoof_probability,
             bonafide_probability: 1.0 - r.spoof_probability,
             result: r.result,
+            detection_mode: r.detection_mode,
           })),
         }
         navigate("/result", { replace: true, state: { result: aggregatedResult } })
@@ -278,11 +284,12 @@ function Analyzing() {
             setReports((current) => [...current, report])
             setStage(2)
 
-            // 6-Second Risk Interception Check (triggers past 6s if Medium or High risk detected)
+            // Early Threat Interception Check (triggers at 4s+ if High or Medium threat / Replay detected)
             if (
               !earlyAlertTriggeredRef.current &&
-              report.elapsed_seconds >= 6 &&
-              (report.risk === "HIGH" || report.risk === "MEDIUM" || report.spoof_probability >= 0.50)
+              (data.early_4s_flagged ||
+                (report.elapsed_seconds >= 4 &&
+                  (report.risk === "HIGH" || report.risk === "MEDIUM" || report.spoof_probability >= 0.50 || data.detection_mode === "PHONE_REPLAY_AI")))
             ) {
               earlyAlertTriggeredRef.current = true
               setEarlyAlertData(report)
@@ -321,21 +328,18 @@ function Analyzing() {
             return
           }
 
-          // Anti-aliasing box-car window downsampler (averages samples within decimation window)
+          // Linear interpolation downsampler (preserves high-frequency vocoder phase transitions)
           const ratio = context.sampleRate / 16000
           const outLength = Math.floor(input.length / ratio)
           const pcm = new Int16Array(outLength)
           for (let i = 0; i < outLength; i += 1) {
-            const start = Math.floor(i * ratio)
-            const end = Math.min(input.length, Math.floor((i + 1) * ratio))
-            let sum = 0
-            let count = 0
-            for (let j = start; j < end; j += 1) {
-              sum += input[j]
-              count += 1
-            }
-            const avg = count > 0 ? sum / count : input[start]
-            const clipped = Math.max(-1, Math.min(1, avg))
+            const pos = i * ratio
+            const idx = Math.floor(pos)
+            const frac = pos - idx
+            const sample = idx + 1 < input.length
+              ? input[idx] * (1 - frac) + input[idx + 1] * frac
+              : input[idx]
+            const clipped = Math.max(-1, Math.min(1, sample))
             pcm[i] = clipped < 0 ? clipped * 32768 : clipped * 32767
           }
           socket.send(pcm.buffer)
