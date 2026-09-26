@@ -182,6 +182,13 @@ async def websocket_endpoint(websocket: WebSocket):
     threat_latched = False
     latched_mode = "LIVE_HUMAN"
 
+    caller_id = websocket.query_params.get("caller_id") or websocket.headers.get("x-caller-id")
+    number_risk_tier = None
+    if config.ENABLE_NUMBER_RISK:
+        import number_risk
+        num_res = number_risk.check_number_risk(caller_id)
+        number_risk_tier = num_res.get("number_risk_tier")
+
     # --- Race-condition guard -------------------------------------------
     # The client can close the socket at any moment (Cut Call button,
     # recording timer ending, tab closed) -- including mid-way through us
@@ -327,7 +334,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 action_info = process_and_log(
                     session_id, effective_sp, effective_risk, effective_mode,
                     transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type,
-                    speaker_slot=speaker_slot, turn_id=turn_id
+                    speaker_slot=speaker_slot, turn_id=turn_id, number_risk_tier=number_risk_tier
                 )
                 if effective_risk in ("HIGH", "MEDIUM"):
                     logger.warning(
@@ -364,6 +371,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
                     "impersonation_candidate": impersonation_candidate,
+                    "number_risk_tier": number_risk_tier if config.ENABLE_NUMBER_RISK else None,
                     "per_speaker_scores": session.get_per_speaker_scores() if config.ENABLE_PER_SPEAKER_SCORES else None,
                     "helpline": {
                         "number": "1930",
@@ -442,7 +450,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 action_info = process_and_log(
                     session_id, effective_sp, effective_risk, effective_mode,
                     transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type,
-                    speaker_slot=speaker_slot, turn_id=turn_id
+                    speaker_slot=speaker_slot, turn_id=turn_id, number_risk_tier=number_risk_tier
                 )
                 if effective_risk in ("HIGH", "MEDIUM"):
                     logger.warning(
@@ -479,6 +487,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
                     "impersonation_candidate": impersonation_candidate,
+                    "number_risk_tier": number_risk_tier if config.ENABLE_NUMBER_RISK else None,
                     "per_speaker_scores": session.get_per_speaker_scores() if config.ENABLE_PER_SPEAKER_SCORES else None,
                     "helpline": {
                         "number": "1930",

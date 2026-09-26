@@ -24,7 +24,7 @@ def init_db():
             turn_id INTEGER
         )
     """)
-    for col, coltype in (("speaker_slot", "TEXT"), ("turn_id", "INTEGER")):
+    for col, coltype in (("speaker_slot", "TEXT"), ("turn_id", "INTEGER"), ("number_risk_tier", "TEXT")):
         try:
             c.execute(f"ALTER TABLE calls ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
@@ -60,16 +60,16 @@ def get_conn():
         conn.close()
 def log_call_full(session_id, spoof_score, risk_level, action, detection_mode,
                    transcript=None, content_risk_flags=None, attack_type=None,
-                   speaker_slot=None, turn_id=None):
+                   speaker_slot=None, turn_id=None, number_risk_tier=None):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO calls
                (session_id, timestamp, spoof_score, risk_level, action, detection_mode,
-                transcript, content_risk_flags, attack_type, speaker_slot, turn_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                transcript, content_risk_flags, attack_type, speaker_slot, turn_id, number_risk_tier)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (session_id, time.time(), spoof_score, risk_level, action, detection_mode,
              transcript, json.dumps(content_risk_flags or []), attack_type,
-             speaker_slot, turn_id)
+             speaker_slot, turn_id, number_risk_tier)
         )
         conn.commit()
 def count_recent_risky(session_id, window_seconds=600, min_risk=("MEDIUM", "HIGH")):

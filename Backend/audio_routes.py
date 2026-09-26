@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File
+from typing import Optional
 from prediction_service import predict_audio
 from risk_engine import get_action
 import config
@@ -10,7 +11,7 @@ import soundfile as sf
 router = APIRouter()
 
 @router.post("/analyze")
-async def analyze_audio(file: UploadFile = File(...)):
+async def analyze_audio(file: UploadFile = File(...), caller_id: Optional[str] = None):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_webm:
         temp_webm.write(await file.read())
         webm_path = temp_webm.name
@@ -76,7 +77,22 @@ async def analyze_audio(file: UploadFile = File(...)):
     result["attack_type"] = attack_type
     result["flagged_phrases"] = flagged_phrases
 
-    action_info = get_action(result.get("risk", "LOW"), spoof_score=result.get("spoof_probability"))
+    number_risk_tier = None
+    number_risk_details = None
+    if config.ENABLE_NUMBER_RISK:
+        import number_risk
+        number_risk_details = number_risk.check_number_risk(caller_id)
+        number_risk_tier = number_risk_details.get("number_risk_tier")
+
+    result["number_risk_tier"] = number_risk_tier
+    if number_risk_details:
+        result["number_risk_details"] = number_risk_details
+
+    action_info = get_action(
+        result.get("risk", "LOW"),
+        spoof_score=result.get("spoof_probability"),
+        number_risk_tier=number_risk_tier
+    )
     result["action"] = action_info.get("action", "ALLOW")
     result["action_message"] = action_info.get("message", "")
 
@@ -99,7 +115,8 @@ async def analyze_audio(file: UploadFile = File(...)):
             result.get("detection_mode", "LIVE_HUMAN"),
             transcript=transcript,
             content_risk_flags=flagged_phrases,
-            attack_type=attack_type
+            attack_type=attack_type,
+            number_risk_tier=number_risk_tier
         )
     except Exception as e_db:
         print(f"[UPLOAD DB ERROR] {e_db}", flush=True)
