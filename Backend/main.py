@@ -22,6 +22,7 @@ from prediction_service import (
     predict_window,
     assess_impersonation_threat,
     evaluate_window_threat,
+    create_spectrogram,
 )
 
 app = FastAPI()
@@ -53,6 +54,10 @@ def process_pcm_window(pcm_bytes):
     """
     Takes a raw 16-bit PCM byte buffer, converts to a normalized float tensor,
     and performs calibrated dual-engine detection (direct neural CNN inference + loudspeaker acoustic forensics).
+
+    Returns a 12-element tuple, the last element being the spectrogram as a
+    plain nested list [freq_bins][time_bins] so it can be JSON-serialized and
+    rendered by the frontend's SpectrogramCanvas.
     """
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     waveform = torch.tensor(audio, dtype=torch.float32)
@@ -67,6 +72,12 @@ def process_pcm_window(pcm_bytes):
     raw_rms = torch.sqrt(torch.mean(waveform ** 2)).item()
     raw_peak = waveform.abs().max().item()
 
+    # Spectrogram for the frontend's SpectrogramCanvas — computed once per
+    # window regardless of which branch (silence/speech) runs below.
+    with torch.no_grad():
+        spec_tensor = create_spectrogram(waveform)
+    spectrogram_list = spec_tensor.squeeze().detach().cpu().numpy().tolist()
+
     if raw_rms < 0.005 and raw_peak < 0.025:
         # Ambient silence / room noise
         breakdown = {
@@ -77,10 +88,10 @@ def process_pcm_window(pcm_bytes):
             "flagged_prosody": False,
             "dual_layer_flagged": False,
         }
-        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", {}, breakdown
+        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", {}, breakdown, spectrogram_list
 
     sp, bp, risk, status, label, conf, detection_mode, forensics, score_breakdown = evaluate_window_threat(waveform, sr=16000)
-    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode, forensics, score_breakdown
+    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode, forensics, score_breakdown, spectrogram_list
 
 
 # ---------------------------------------------------------
@@ -91,8 +102,21 @@ def process_pcm_window(pcm_bytes):
 async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
+
+    # ---------------------------------------------------------
+    # Session tracking (section 1.3/1.5 of the build guide)
+    # Frontend can open the socket as /audio-stream?session_id=<uuid>
+    # to keep one session across reconnects; if it doesn't pass one,
+    # session_manager generates a fresh uuid for this connection, which
+    # is already enough for the "two tabs = two independent sessions" demo.
+    # ---------------------------------------------------------
+    incoming_session_id = websocket.query_params.get("session_id")
+    session = session_manager.get_or_create_session(incoming_session_id)
+    session_id = session.session_id
+
     print("\n" + "=" * 65, flush=True)
     print("[MICROPHONE] LIVE STREAM OPENED", flush=True)
+    print(f"Session ID: {session_id}", flush=True)
     print("Mode: Real-time Continuous Sliding Evaluation (4s Window / 2s Hop)", flush=True)
     print("=" * 65, flush=True)
 
@@ -123,7 +147,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Early Feedback: evaluate first 2s immediately if user just started speaking
             if analysis_count == 0 and len(audio_buffer) >= HOP_BYTES and len(audio_buffer) < WINDOW_BYTES:
                 chunk_bytes = bytes(audio_buffer[:HOP_BYTES])
-                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown = process_pcm_window(chunk_bytes)
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown, spectrogram_list = process_pcm_window(chunk_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
 
@@ -166,20 +190,31 @@ async def websocket_endpoint(websocket: WebSocket):
                     f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f}",
                     flush=True
                 )
+
+                # Session + risk-action wiring (section 1.3/1.4/1.5)
+                session.add_segment(effective_sp, effective_risk, effective_mode)
+                action_info = process_and_log(session_id, effective_sp, effective_risk, effective_mode)
+
                 is_early_4s = True
                 impersonation_candidate = bool(effective_sp >= 0.50)
                 await websocket.send_json({
                     "type": "prediction",
+                    "session_id": session_id,
                     "spoof_probability": round(effective_sp, 4),
                     "spectral_score": round(spec_sc, 4),
                     "prosody_score": round(pros_sc, 4),
                     "final_score": round(effective_sp, 4),
                     "score_breakdown": score_breakdown,
+                    "forensics": forensics,
+                    "spectrogram": spectrogram_list,
                     "confidence": round(conf, 4),
                     "risk": effective_risk,
                     "result": effective_label,
                     "status": effective_status,
                     "detection_mode": effective_mode,
+                    "action": action_info["action"],
+                    "action_message": action_info["message"],
+                    "repeated_suspicious": action_info["repeated_suspicious"],
                     "elapsed_seconds": 2,
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
@@ -197,7 +232,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 window_bytes = bytes(audio_buffer[:WINDOW_BYTES])
                 del audio_buffer[:HOP_BYTES]
 
-                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown = process_pcm_window(window_bytes)
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown, spectrogram_list = process_pcm_window(window_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
                 elapsed = analysis_count * HOP_SECONDS
@@ -245,20 +280,31 @@ async def websocket_endpoint(websocket: WebSocket):
                     f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f}",
                     flush=True
                 )
+
+                # Session + risk-action wiring (section 1.3/1.4/1.5)
+                session.add_segment(effective_sp, effective_risk, effective_mode)
+                action_info = process_and_log(session_id, effective_sp, effective_risk, effective_mode)
+
                 is_early_4s = elapsed <= 4
                 impersonation_candidate = bool(effective_sp >= 0.50)
                 await websocket.send_json({
                     "type": "prediction",
+                    "session_id": session_id,
                     "spoof_probability": round(effective_sp, 4),
                     "spectral_score": round(spec_sc, 4),
                     "prosody_score": round(pros_sc, 4),
                     "final_score": round(effective_sp, 4),
                     "score_breakdown": score_breakdown,
+                    "forensics": forensics,
+                    "spectrogram": spectrogram_list,
                     "confidence": round(conf, 4),
                     "risk": effective_risk,
                     "result": effective_label,
                     "status": effective_status,
                     "detection_mode": effective_mode,
+                    "action": action_info["action"],
+                    "action_message": action_info["message"],
+                    "repeated_suspicious": action_info["repeated_suspicious"],
                     "elapsed_seconds": elapsed,
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
@@ -285,7 +331,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # Process any remaining speech tail if at least 1 second of audio remains
         if len(audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE:
-            sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown = process_pcm_window(bytes(audio_buffer))
+            sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown, spectrogram_list = process_pcm_window(bytes(audio_buffer))
             session_spoof_probs.append(sp)
             analysis_count += 1
             badge = "[ALERT] AI DEEPFAKE (PHONE REPLAY)" if (mode == "PHONE_REPLAY_AI" and sp >= 0.50) else ("[ALERT] AI DEEPFAKE" if sp >= 0.70 else ("[WARN]  SUSPICIOUS" if sp >= 0.50 else "[OK]    BONAFIDE"))
@@ -302,10 +348,14 @@ async def websocket_endpoint(websocket: WebSocket):
         )
         print("\n" + "=" * 65, flush=True)
         print("[MICROPHONE] LIVE AUDIO CONNECTION CLOSED", flush=True)
+        print(f"Session ID: {session_id}", flush=True)
         print(f"Total Windows Evaluated: {analysis_count}", flush=True)
         print(f"Max Spoof Probability:   {max_spoof*100:.1f}%", flush=True)
         print(f"Session Verdict:         {overall_verdict}", flush=True)
         print("=" * 65 + "\n", flush=True)
+
+        # Free the in-memory session now that the call has ended
+        session_manager.end_session(session_id)
 
     except Exception as e:
         print(f"WebSocket error: {repr(e)}", flush=True)
@@ -313,6 +363,20 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.close()
         except:
             pass
+
+
+# ---------------------------------------------------------
+# Dashboard / multi-call visibility endpoints (section 1.5)
+# ---------------------------------------------------------
+
+@app.get("/dashboard/stats")
+def dashboard_stats():
+    return db.get_dashboard_stats()
+
+
+@app.get("/sessions/active")
+def active_sessions():
+    return session_manager.list_active_sessions()
 
 
 # ---------------------------------------------------------
