@@ -215,6 +215,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 save_path = Path(__file__).resolve().parent.parent / "last_live_mic.wav"
                 sf.write(str(save_path), raw_np, SAMPLE_RATE)
                 print(f"\n[DEBUG] Saved live microphone audio to {save_path.name} ({len(raw_np)/SAMPLE_RATE:.2f}s)", flush=True)
+            except Exception as e:
+                print(f"Warning: Failed to save live microphone audio: {e}", flush=True)
+        # Process remaining buffer if no segments were evaluated yet (e.g. short audio between 1s and 4s)
+        if not session_spoof_probs and len(audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE:
+            try:
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown, spectrogram_list = process_pcm_window(bytes(audio_buffer))
+                session_spoof_probs.append(sp)
+                analysis_count += 1
             except Exception:
                 pass
 
@@ -263,14 +271,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 session_spoof_probs.append(sp)
                 analysis_count += 1
 
-                if sp >= config.THREAT_LATCH_THRESHOLD or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
+                if is_speech and (sp >= config.THREAT_LATCH_THRESHOLD or (mode in ("PHONE_REPLAY_AI", "DIRECT_AI") and sp >= config.MEDIUM_RISK_THRESHOLD)):
                     threat_latched = True
-                    latched_mode = mode if mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    latched_mode = mode if mode != "LIVE_HUMAN" else "DIRECT_AI"
                     session_max_spoof = max(session_max_spoof, sp)
 
                 if threat_latched:
                     effective_sp = max(session_max_spoof, sp, config.LATCHED_FLOOR)
-                    effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "DIRECT_AI"
                     effective_risk = "HIGH"
                     effective_status = "high_risk"
                     effective_label = "spoof"
@@ -375,14 +383,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 analysis_count += 1
                 elapsed = analysis_count * HOP_SECONDS
 
-                if sp >= config.THREAT_LATCH_THRESHOLD or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
+                if is_speech and (sp >= config.THREAT_LATCH_THRESHOLD or (mode in ("PHONE_REPLAY_AI", "DIRECT_AI") and sp >= config.MEDIUM_RISK_THRESHOLD)):
                     threat_latched = True
-                    latched_mode = mode if mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    latched_mode = mode if mode != "LIVE_HUMAN" else "DIRECT_AI"
                     session_max_spoof = max(session_max_spoof, sp)
 
                 if threat_latched:
                     effective_sp = max(session_max_spoof, sp, config.LATCHED_FLOOR)
-                    effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
+                    effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "DIRECT_AI"
                     effective_risk = "HIGH"
                     effective_status = "high_risk"
                     effective_label = "spoof"

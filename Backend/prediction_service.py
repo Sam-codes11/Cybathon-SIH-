@@ -313,38 +313,23 @@ def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
         sub_mid_ratio = float(sum_sub / (sum_mid + 1e-6))
         sub_fraction = float(sum_sub / (sum_core + sum_sub + 1e-6))
         high_mid_ratio = float(sum_high / (sum_mid + 1e-6))
-    else:
-        windowed = w * np.hanning(len(w))
-        fft_vals = np.abs(np.fft.rfft(windowed))
-        freqs = np.fft.rfftfreq(len(w), d=1.0 / sr)
-        power = fft_vals ** 2
-        total_p = float(np.sum(power) + 1e-12)
+        # 1. Physical Loudspeaker Transducer Replay Score (S_replay)
+        # Smartphone speakers physically cannot reproduce < 220Hz (steep -18dB/octave highpass).
+        # Real live voice has sub_mid_ratio >= 0.35 and sub_fraction >= 0.12.
+        # Phone speaker replay drops sub_mid_ratio < 0.30 and sub_fraction < 0.08.
+        sub_loss_score = float(1.0 / (1.0 + np.exp(np.clip((sub_mid_ratio - 0.32) / 0.08, -50.0, 50.0))))
+        sub_frac_score = float(1.0 / (1.0 + np.exp(np.clip((sub_fraction - 0.10) / 0.03, -50.0, 50.0))))
+        high_loss_score = float(1.0 / (1.0 + np.exp(np.clip((high_mid_ratio - 0.018) / 0.007, -50.0, 50.0))))
 
-        p_sub = float(np.sum(power[(freqs >= 70) & (freqs < 220)]) / total_p)
-        p_mid = float(np.sum(power[(freqs >= 1200) & (freqs < 3200)]) / total_p)
-        p_core = float(np.sum(power[(freqs >= 250) & (freqs < 1000)]) / total_p)
-        p_high = float(np.sum(power[(freqs >= 6500) & (freqs < 8000)]) / total_p)
-
-        sub_mid_ratio = float(p_sub / (p_mid + 1e-6))
-        sub_fraction = float(p_sub / (p_core + p_sub + 1e-6))
-        high_mid_ratio = float(p_high / (p_mid + 1e-6))
-        jitter = 0.055
-
-    # 1. Physical Loudspeaker Transducer Replay Score (S_replay)
-    # Smartphone speakers physically cannot reproduce < 220Hz (steep -18dB/octave highpass).
-    # Real live voice has sub_mid_ratio >= 0.35 and sub_fraction >= 0.12.
-    # Phone speaker replay drops sub_mid_ratio < 0.30 and sub_fraction < 0.08.
-    sub_loss_score = float(1.0 / (1.0 + np.exp(np.clip((sub_mid_ratio - 0.32) / 0.08, -50.0, 50.0))))
-    sub_frac_score = float(1.0 / (1.0 + np.exp(np.clip((sub_fraction - 0.10) / 0.03, -50.0, 50.0))))
-    high_loss_score = float(1.0 / (1.0 + np.exp(np.clip((high_mid_ratio - 0.018) / 0.007, -50.0, 50.0))))
-
-    replay_score = float(0.50 * sub_loss_score + 0.35 * sub_frac_score + 0.15 * high_loss_score)
-
-    # 2. AI Synthetic Prosodic Likelihood (S_prosody)
-    if has_voiced:
+        replay_score = float(0.50 * sub_loss_score + 0.35 * sub_frac_score + 0.15 * high_loss_score)
         prosody_score = float(1.0 / (1.0 + np.exp(np.clip((jitter - 0.055) / 0.015, -50.0, 50.0))))
     else:
-        prosody_score = 0.50
+        sub_mid_ratio = 0.40
+        sub_fraction = 0.15
+        high_mid_ratio = 0.02
+        jitter = 0.055
+        replay_score = 0.05
+        prosody_score = 0.15
 
     return {
         "p_sub": float(sub_fraction),
@@ -519,7 +504,7 @@ def score_prosody_anomaly(features: dict) -> float:
     - Micro-jitter absence (lack of biological vocal cord tremor)
     """
     if not features.get("has_voiced", False):
-        return 0.50
+        return 0.15
 
     f0_std = float(features.get("f0_std", 0.0))
     f0_range = float(features.get("f0_range", 0.0))
@@ -596,8 +581,13 @@ def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     w_boost = apply_pre_emphasis(waveform, coeff=0.95)
     _, spoof_boost = predict_window(w_boost)
 
-    # Acoustic Spectral Score from CNN
-    spectral_score = float(max(spoof_raw, spoof_boost))
+    # Acoustic Spectral Score from CNN:
+    # If base audio shows some suspicion (spoof_raw >= 0.25), allow pre-emphasis boost to uncover vocoder artifacts.
+    # Otherwise, avoid noise amplification on clean human speech.
+    if spoof_raw >= 0.25:
+        spectral_score = float(max(spoof_raw, spoof_boost))
+    else:
+        spectral_score = float(max(spoof_raw, min(spoof_boost, 0.35)))
 
     # 3. Acoustic Forensics (Physical transducer analysis)
     forensics = extract_acoustic_forensics(waveform, sr)
@@ -616,19 +606,19 @@ def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
 
     # Physical Phone/Loudspeaker Replay AI Detection
     is_phone_replay = bool(
-        replay_score >= 0.52 or
-        (replay_score >= 0.42 and (spectral_score >= 0.18 or spoof_boost >= 0.18 or prosody_score >= 0.45)) or
-        (spoof_boost >= 0.50 and replay_score >= 0.38)
+        replay_score >= 0.50 or
+        (replay_score >= 0.45 and spectral_score >= 0.45 and prosody_score >= 0.45)
     )
 
     is_direct_ai = bool(
-        spectral_score >= 0.50 or
-        (spectral_score >= 0.40 and prosody_score >= 0.45) or
-        (spoof_boost >= 0.65 and prosody_score >= 0.40)
+        spectral_score >= 0.60 or
+        (spectral_score >= 0.48 and prosody_score >= 0.50) or
+        (spectral_score >= 0.38 and spoof_boost >= 0.65 and prosody_score >= 0.45)
     )
 
     if is_direct_ai:
-        final_spoof = max(fused_score, spectral_score, 0.78 if spectral_score >= 0.65 else 0.55)
+        direct_elevated = 0.50 + 0.30 * spectral_score + 0.20 * prosody_score
+        final_spoof = max(fused_score, spectral_score, direct_elevated, 0.72 if spectral_score >= 0.65 else 0.55)
         detection_mode = "DIRECT_AI"
     elif is_phone_replay:
         # Replay attack: elevate spoof score reliably to High Risk (>= 0.74)

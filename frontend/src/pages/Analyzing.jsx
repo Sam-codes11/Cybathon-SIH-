@@ -78,6 +78,9 @@ function Analyzing() {
   const disposeAudioRef = useRef(null)
   const handleCutCallRef = useRef(null)
   const handleContinueRef = useRef(null)
+  const handleDismissRef = useRef(null)
+  const recordedBlobRef = useRef(null)
+  const hasStreamCompletedRef = useRef(false)
 
   const incomingAudioBlob = location.state?.audioBlob
   const mode = location.state?.mode || (incomingAudioBlob ? "upload" : "record")
@@ -187,25 +190,47 @@ function Analyzing() {
     }
     handleCutCallRef.current = handleCutCall
 
+    const handleDismiss = () => {
+      setEarlyAlertOpen(false)
+      earlyAlertOpenRef.current = false
+      if (hasStreamCompletedRef.current) {
+        finish()
+      }
+    }
+    handleDismissRef.current = handleDismiss
+
     const handleContinue = (relationship) => {
       setEarlyAlertOpen(false)
       earlyAlertOpenRef.current = false
       callerRelationshipRef.current = relationship
       setCallerRelationship(relationship)
       setChallengeModeActive(true)
+      if (hasStreamCompletedRef.current) {
+        finish()
+        return
+      }
       if (mode === "record") {
         stopId = window.setTimeout(() => {
-          if (recorder?.state !== "inactive") recorder.stop()
+          if (recorder?.state !== "inactive") {
+            try { recorder.stop() } catch {}
+          }
           disposeAudio()
-          finishId = window.setTimeout(finish, 900)
-        }, 3500)
+          finishId = window.setTimeout(finish, 800)
+        }, Math.max(1500, secondsLeft * 1000))
       }
     }
     handleContinueRef.current = handleContinue
 
-    const finish = () => {
+    const finish = async () => {
       if (cancelled) return
-      if (earlyAlertOpenRef.current) return
+      if (earlyAlertOpenRef.current) {
+        hasStreamCompletedRef.current = true
+        return
+      }
+      disposeAudio()
+      if (recorder?.state === "recording") {
+        try { recorder.stop() } catch {}
+      }
       socketRef.current?.close()
       socketRef.current = null
       setIsRecording(false)
@@ -270,9 +295,36 @@ function Analyzing() {
           })),
         }
         navigate("/result", { replace: true, state: { result: aggregatedResult } })
-      } else {
-        navigate("/result", { replace: true, state: { result: latestReportRef.current } })
+        return
       }
+
+      if (latestReportRef.current) {
+        navigate("/result", { replace: true, state: { result: latestReportRef.current } })
+        return
+      }
+
+      // If reportsRef is empty and audio blob exists, fetch HTTP /analyze directly!
+      const fallbackBlob = incomingAudioBlob || recordedBlobRef.current
+      if (fallbackBlob) {
+        try {
+          const formData = new FormData()
+          formData.append("file", fallbackBlob, fallbackBlob.name || "recording.wav")
+          const host = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname
+          const response = await fetch(`http://${host}:8000/analyze`, { method: "POST", body: formData })
+          if (response.ok) {
+            const result = await response.json()
+            if (!cancelled) {
+              navigate("/result", { replace: true, state: { result } })
+              return
+            }
+          }
+        } catch (postErr) {
+          console.error("HTTP /analyze fallback error:", postErr)
+        }
+      }
+
+      // If mic recording had no speech detected or was silent:
+      navigate("/result", { replace: true, state: { result: { silent: true } } })
     }
 
     let uploadStreamIntervalId = null
@@ -341,6 +393,10 @@ function Analyzing() {
           uploadStreamIntervalId = window.setInterval(() => {
             if (cancelled || socket.readyState !== WebSocket.OPEN) {
               window.clearInterval(uploadStreamIntervalId)
+              if (!cancelled) {
+                if (!earlyAlertOpenRef.current) finish()
+                else hasStreamCompletedRef.current = true
+              }
               return
             }
 
@@ -398,7 +454,34 @@ function Analyzing() {
           }
         }
 
-        socket.onerror = () => setErrorMessage("Live voice detection could not connect to the backend.")
+        socket.onerror = async () => {
+          console.warn("WebSocket upload stream connection error, running HTTP /analyze fallback")
+          try {
+            const formData = new FormData()
+            formData.append("file", blob, blob.name || "recording.wav")
+            const host = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname
+            const response = await fetch(`http://${host}:8000/analyze`, { method: "POST", body: formData })
+            if (response.ok) {
+              const result = await response.json()
+              if (!cancelled) {
+                navigate("/result", { replace: true, state: { result } })
+                return
+              }
+            }
+          } catch (postErr) {
+            console.error("HTTP /analyze fallback error:", postErr)
+          }
+          setErrorMessage("Live voice detection could not connect to the backend.")
+        }
+        socket.onclose = () => {
+          if (cancelled) return
+          window.clearInterval(uploadStreamIntervalId)
+          if (!earlyAlertOpenRef.current) {
+            finish()
+          } else {
+            hasStreamCompletedRef.current = true
+          }
+        }
       } catch (error) {
         console.error("Upload streaming error, falling back to HTTP analyze:", error)
         try {
@@ -420,7 +503,12 @@ function Analyzing() {
         setErrorMessage("")
         setStage(0)
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: true,
+          },
         })
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop())
@@ -428,7 +516,16 @@ function Analyzing() {
         }
         streamRef.current = stream
         recorder = new MediaRecorder(stream)
-        recorder.start()
+        const audioChunks = []
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) audioChunks.push(e.data)
+        }
+        recorder.onstop = () => {
+          if (audioChunks.length > 0) {
+            recordedBlobRef.current = new Blob(audioChunks, { type: recorder.mimeType || "audio/webm" })
+          }
+        }
+        recorder.start(500)
 
         reportsRef.current = []
         const socket = new WebSocket(getWebSocketUrl())
@@ -472,6 +569,14 @@ function Analyzing() {
           }
         }
         socket.onerror = () => setErrorMessage("Live voice detection could not connect to the backend.")
+        socket.onclose = () => {
+          if (cancelled) return
+          if (!earlyAlertOpenRef.current) {
+            finish()
+          } else {
+            hasStreamCompletedRef.current = true
+          }
+        }
 
         const AudioContextClass = window.AudioContext || window.webkitAudioContext
         let context
@@ -622,7 +727,7 @@ function Analyzing() {
         detectionMode={earlyAlertData?.detection_mode}
         onCutCall={(rel) => handleCutCallRef.current?.(rel)}
         onContinue={(rel) => handleContinueRef.current?.(rel)}
-        onDismiss={() => setEarlyAlertOpen(false)}
+        onDismiss={() => handleDismissRef.current?.()}
       />
     </main>
   )
