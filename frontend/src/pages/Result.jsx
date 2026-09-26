@@ -38,14 +38,17 @@ const reveal = { hidden: { opacity: 0, y: 18 }, visible: { opacity: 1, y: 0 } }
 
 // Automated action banner shown next to the confidence badge, driven by
 // the backend's risk_engine action (or a local fallback if not present yet).
-function getAutomatedAction(risk) {
-  switch (risk) {
-    case "HIGH":
-      return { action: "ESCALATE", label: "High risk -- auto-escalated, alert triggered", color: "#b4233e" }
-    case "MEDIUM":
-      return { action: "VERIFY", label: "Verification step recommended", color: "#92674b" }
+function getAutomatedAction(risk, action) {
+  const effectiveAction = action || (risk === "HIGH" ? "ALERT" : risk === "MEDIUM" ? "VERIFY" : "ALLOW")
+  switch (effectiveAction) {
+    case "ESCALATE":
+      return { action: "ESCALATE", label: "Critical risk -- auto-escalated, immediate interception", color: "#b4233e", bg: "#fdf2f4", border: "#f5c6cb" }
+    case "ALERT":
+      return { action: "ALERT", label: "High risk -- alert triggered", color: "#b4233e", bg: "#fdf2f4", border: "#f5c6cb" }
+    case "VERIFY":
+      return { action: "VERIFY", label: "Verification step recommended", color: "#92674b", bg: "#faf5ef", border: "#eedbc8" }
     default:
-      return { action: "ALLOW", label: "Call cleared -- no action needed", color: "#28756f" }
+      return { action: "ALLOW", label: "Call cleared -- no action needed", color: "#28756f", bg: "#edf7f5", border: "#bfe5dc" }
   }
 }
 
@@ -275,7 +278,7 @@ function Result() {
   const confidencePercent = isReal ? 100 - riskScore : riskScore
 
   const riskLevel = backendData?.risk || (riskScore >= 70 ? "HIGH" : riskScore >= 50 ? "MEDIUM" : "LOW")
-  const automatedAction = getAutomatedAction(riskLevel)
+  const automatedAction = getAutomatedAction(riskLevel, backendData?.action)
 
   const forensicsData = backendData?.forensics || {}
   const replayScoreVal = forensicsData.replay_score !== undefined ? Number(forensicsData.replay_score) : 0.05
@@ -530,10 +533,16 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                   Confidence {report.confidence}%
                 </div>
                 <div
-                  className="rounded-full border px-4 py-2 text-xs font-bold"
-                  style={{ borderColor: automatedAction.color, color: automatedAction.color }}
+                  className="rounded-full border px-4 py-2 text-xs font-bold inline-flex items-center gap-1.5"
+                  style={{
+                    borderColor: automatedAction.border,
+                    backgroundColor: automatedAction.bg,
+                    color: automatedAction.color,
+                  }}
                 >
-                  {(backendData?.action || automatedAction.action)}: {backendData?.action_message || automatedAction.label}
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: automatedAction.color }} />
+                  <span>Action: {backendData?.action || automatedAction.action}</span>
+                  <span className="text-[11px] font-normal opacity-85">({backendData?.action_message || automatedAction.label})</span>
                 </div>
                 <TrustBadge
                   isMatch={backendData?.is_match}
@@ -860,10 +869,22 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                   </div>
                 </div>
                 <div className="mt-7 border-t border-[#e6eaf0] pt-5">
-                  <p className="flex items-center gap-2 text-sm font-semibold text-[#33425c]">
-                    <CircleAlert className="h-4 w-4 text-[#db684f]" />
-                    Recommended next step
-                  </p>
+                  <div className="flex items-center justify-between">
+                    <p className="flex items-center gap-2 text-sm font-semibold text-[#33425c]">
+                      <CircleAlert className="h-4 w-4 text-[#db684f]" />
+                      Recommended next step
+                    </p>
+                    <span
+                      className="rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider"
+                      style={{
+                        backgroundColor: automatedAction.bg,
+                        color: automatedAction.color,
+                        border: `1px solid ${automatedAction.border}`,
+                      }}
+                    >
+                      Action: {backendData?.action || automatedAction.action}
+                    </span>
+                  </div>
                   <p className="mt-2 text-sm leading-6 text-[#67748a]">
                     {isReal
                       ? "No immediate action needed, but stay alert for other signs of fraud."
