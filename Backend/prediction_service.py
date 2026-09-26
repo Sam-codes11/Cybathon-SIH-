@@ -1,11 +1,23 @@
 from pathlib import Path
 import tempfile
 
+import librosa
 import numpy as np
 import soundfile as sf
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+
+# ============================================================
+# MULTI-LAYER SCORE FUSION WEIGHTS
+# ============================================================
+
+# Weight for Layer 1: Acoustic STFT Spectrogram CNN score
+SPECTRAL_WEIGHT = 0.7
+
+# Weight for Layer 2: Behavioral / Prosodic Anomaly score
+PROSODY_WEIGHT = 0.3
 
 
 # ============================================================
@@ -346,13 +358,236 @@ def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
     }
 
 
+# ============================================================
+# BEHAVIORAL & PROSODIC FEATURE EXTRACTION LAYER
+# ============================================================
+
+def extract_prosody_features(audio_path_or_array, sample_rate: int = 16000) -> dict:
+    """
+    Extracts lightweight prosodic and behavioral features using librosa:
+    1. Pitch (F0) dynamics: mean, std, range, min, max (via fast bounded librosa.yin).
+    2. Speaking rate proxies: voiced-frame ratio and onset syllable-rate estimate.
+    3. Pause & silence statistics: number of pauses, mean pause duration, pause std, pause ratio (via librosa.effects.split).
+    4. Micro-perturbation biometrics: cycle-to-cycle F0 jitter and frame shimmer.
+
+    Designed for real-time execution (~35ms per 4-second window).
+    """
+    if isinstance(audio_path_or_array, (str, Path)):
+        y, sr = sf.read(str(audio_path_or_array), dtype="float32")
+        if sr != sample_rate:
+            y = librosa.resample(y, orig_sr=sr, target_sr=sample_rate)
+    elif hasattr(audio_path_or_array, "detach"):
+        y = audio_path_or_array.detach().cpu().numpy().astype(np.float32)
+    else:
+        y = np.array(audio_path_or_array, dtype=np.float32)
+
+    if y.ndim > 1:
+        y = np.mean(y, axis=-1 if y.shape[-1] < y.shape[0] else 0)
+    y = np.squeeze(y)
+
+    total_samples = len(y)
+    if total_samples == 0:
+        return {
+            "f0_mean": 0.0,
+            "f0_std": 0.0,
+            "f0_range": 0.0,
+            "f0_min": 0.0,
+            "f0_max": 0.0,
+            "voiced_frame_ratio": 0.0,
+            "syllable_rate": 0.0,
+            "num_pauses": 0,
+            "mean_pause_duration": 0.0,
+            "pause_duration_std": 0.0,
+            "pause_ratio": 0.0,
+            "jitter": 0.0,
+            "shimmer": 0.0,
+            "has_voiced": False,
+        }
+
+    duration = total_samples / sample_rate
+    frame_length = 1024
+    hop_length = 512
+
+    # 1. Fundamental frequency (F0) estimation using fast bounded YIN
+    try:
+        f0 = librosa.yin(
+            y,
+            fmin=65,
+            fmax=500,
+            sr=sample_rate,
+            frame_length=frame_length,
+            hop_length=hop_length,
+        )
+        rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+        max_rms = float(np.max(rms)) if len(rms) > 0 else 0.0
+        voiced_mask = (rms > max(0.006, 0.07 * max_rms)) & (f0 > 68.0) & (f0 < 490.0)
+    except Exception:
+        f0 = np.array([])
+        rms = np.array([])
+        voiced_mask = np.array([], dtype=bool)
+
+    has_voiced = bool(np.any(voiced_mask))
+    if has_voiced:
+        voiced_f0 = f0[voiced_mask]
+        f0_mean = float(np.mean(voiced_f0))
+        f0_std = float(np.std(voiced_f0))
+        f0_min = float(np.min(voiced_f0))
+        f0_max = float(np.max(voiced_f0))
+        f0_range = float(f0_max - f0_min)
+    else:
+        voiced_f0 = np.array([])
+        f0_mean = 0.0
+        f0_std = 0.0
+        f0_min = 0.0
+        f0_max = 0.0
+        f0_range = 0.0
+
+    # 2. Speaking rate proxies
+    voiced_frame_ratio = float(np.sum(voiced_mask) / max(len(f0), 1))
+    try:
+        onset_env = librosa.onset.onset_strength(y=y, sr=sample_rate, hop_length=hop_length)
+        peaks = librosa.util.peak_pick(onset_env, pre_max=3, post_max=3, pre_avg=3, post_avg=3, delta=0.5, wait=8)
+        syllable_rate = float(len(peaks) / max(duration, 0.1))
+    except Exception:
+        syllable_rate = 0.0
+
+    # 3. Pause & silence statistics
+    try:
+        intervals = librosa.effects.split(y, top_db=25, frame_length=frame_length, hop_length=hop_length)
+        if len(intervals) > 1:
+            pauses = [
+                (intervals[i + 1][0] - intervals[i][1]) / sample_rate
+                for i in range(len(intervals) - 1)
+                if intervals[i + 1][0] > intervals[i][1]
+            ]
+            num_pauses = len(pauses)
+            mean_pause_duration = float(np.mean(pauses)) if pauses else 0.0
+            pause_duration_std = float(np.std(pauses)) if len(pauses) > 1 else 0.0
+            pause_ratio = float(sum(pauses) / max(duration, 0.1))
+        else:
+            num_pauses = 0
+            mean_pause_duration = 0.0
+            pause_duration_std = 0.0
+            pause_ratio = 0.0
+    except Exception:
+        num_pauses = 0
+        mean_pause_duration = 0.0
+        pause_duration_std = 0.0
+        pause_ratio = 0.0
+
+    # 4. Micro-perturbation biometrics: cycle jitter and amplitude shimmer
+    if len(voiced_f0) >= 4:
+        periods = 1.0 / voiced_f0
+        jitter = float(np.mean(np.abs(np.diff(periods))) / (np.mean(periods) + 1e-9))
+        voiced_rms = rms[voiced_mask]
+        mean_v_rms = float(np.mean(voiced_rms))
+        if mean_v_rms > 1e-6 and len(voiced_rms) >= 4:
+            shimmer = float(np.mean(np.abs(np.diff(voiced_rms))) / (mean_v_rms + 1e-9))
+        else:
+            shimmer = 0.0
+    else:
+        jitter = 0.0
+        shimmer = 0.0
+
+    return {
+        "f0_mean": round(f0_mean, 2),
+        "f0_std": round(f0_std, 2),
+        "f0_range": round(f0_range, 2),
+        "f0_min": round(f0_min, 2),
+        "f0_max": round(f0_max, 2),
+        "voiced_frame_ratio": round(voiced_frame_ratio, 4),
+        "syllable_rate": round(syllable_rate, 2),
+        "num_pauses": num_pauses,
+        "mean_pause_duration": round(mean_pause_duration, 4),
+        "pause_duration_std": round(pause_duration_std, 4),
+        "pause_ratio": round(pause_ratio, 4),
+        "jitter": round(jitter, 5),
+        "shimmer": round(shimmer, 5),
+        "has_voiced": has_voiced,
+    }
+
+
+def score_prosody_anomaly(features: dict) -> float:
+    """
+    Evaluates behavioral and prosodic features to output a prosody anomaly score
+    between 0.0 (natural organic human speech) and 1.0 (TTS / voice cloning artifacts).
+
+    Evaluates:
+    - Unnaturally flat pitch variance & restricted range (TTS monotone / neural smoothing)
+    - Mechanically uniform or missing pauses (unnatural pause duration std or breathless speech)
+    - Voiced frame ratio anomalies
+    - Micro-jitter absence (lack of biological vocal cord tremor)
+    """
+    if not features.get("has_voiced", False):
+        return 0.50
+
+    f0_std = float(features.get("f0_std", 0.0))
+    f0_range = float(features.get("f0_range", 0.0))
+    voiced_ratio = float(features.get("voiced_frame_ratio", 0.0))
+    num_pauses = int(features.get("num_pauses", 0))
+    pause_std = float(features.get("pause_duration_std", 0.0))
+    jitter = float(features.get("jitter", 0.0))
+
+    # 1. Pitch flatness penalty (TTS typically has unnaturally flat f0_std < 14Hz, range < 45Hz)
+    pitch_flatness_score = 1.0 / (1.0 + np.exp((f0_std - 14.0) / 3.5))
+    range_flatness_score = 1.0 / (1.0 + np.exp((f0_range - 50.0) / 15.0))
+    pitch_anomaly = 0.60 * pitch_flatness_score + 0.40 * range_flatness_score
+
+    # 2. Pause / Silence timing anomaly (mechanically regular pause tokens or unbroken breathless speech)
+    if num_pauses >= 2:
+        if pause_std < 0.035:
+            pause_anomaly = 0.75
+        elif pause_std < 0.06:
+            pause_anomaly = 0.55
+        else:
+            pause_anomaly = 0.20
+    elif num_pauses == 0 and voiced_ratio > 0.80:
+        pause_anomaly = 0.65
+    elif num_pauses == 1:
+        pause_anomaly = 0.35
+    else:
+        pause_anomaly = 0.30
+
+    # 3. Voiced ratio anomaly (continuous breathless speech vs natural conversational duty cycle)
+    if voiced_ratio > 0.85:
+        voiced_anomaly = min(1.0, 0.50 + (voiced_ratio - 0.85) * 2.5)
+    elif voiced_ratio < 0.20:
+        voiced_anomaly = 0.45
+    else:
+        voiced_anomaly = 0.25
+
+    # 4. Micro-jitter / biomechanical vocal cord tremor:
+    # Biological vocal folds have jitter ~ 0.006 - 0.030. Perfect neural smoothing has jitter < 0.004
+    if jitter < 0.004:
+        jitter_anomaly = 0.70
+    elif jitter < 0.008:
+        jitter_anomaly = 0.50
+    elif jitter > 0.050:
+        jitter_anomaly = 0.55
+    else:
+        jitter_anomaly = 0.20
+
+    combined_score = (
+        0.45 * pitch_anomaly +
+        0.25 * pause_anomaly +
+        0.20 * jitter_anomaly +
+        0.10 * voiced_anomaly
+    )
+
+    return float(np.clip(combined_score, 0.01, 0.99))
+
+
+# ============================================================
+# EVALUATE WINDOW THREAT (DUAL-LAYER FUSION)
+# ============================================================
+
 def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     """
-    Calibrated multi-tier threat evaluation:
-    1. Direct Neural CNN Inference (calibrated with peak normalization matching training pipeline).
-    2. High-Frequency Pre-Emphasis Stream (recovers attenuated high-frequency vocoder phase harmonics).
-    3. Physical Loudspeaker Transducer Forensics (sub-220Hz acoustic cutoff & speaker mid-resonance).
-    4. AI Prosodic & Micro-Tremor Biometrics (biological vocal fold micro-jitter vs synthetic neural smoothing).
+    Calibrated dual-layer threat evaluation:
+    1. Acoustic Layer: STFT Spectrogram CNN Inference (calibrated peak-normalized waveform + pre-emphasis).
+    2. Behavioral Layer: Real-time prosodic anomaly scoring (F0 pitch dynamics, pauses, jitter).
+    3. Physical Transducer Forensics: Loudspeaker sub-bass cutoff and mid-frequency reflection.
+    4. Configurable Score Fusion: weighted combination of spectral and prosodic scores.
     """
     # 1. Base CNN prediction (peak-normalized to training distribution)
     bonafide_raw, spoof_raw = predict_window(waveform)
@@ -361,38 +596,51 @@ def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     w_boost = apply_pre_emphasis(waveform, coeff=0.95)
     _, spoof_boost = predict_window(w_boost)
 
-    # 3. Acoustic Forensics (Physical transducer + biological vocal biometrics)
+    # Acoustic Spectral Score from CNN
+    spectral_score = float(max(spoof_raw, spoof_boost))
+
+    # 3. Acoustic Forensics (Physical transducer analysis)
     forensics = extract_acoustic_forensics(waveform, sr)
     replay_score = forensics["replay_score"]
-    prosody_score = forensics["prosody_score"]
 
-    # Physical Phone/Loudspeaker Replay AI Detection:
-    # Stable multi-condition detection that resists acoustic distance variations
+    # 4. Behavioral & Prosodic Feature Extraction & Scoring
+    prosody_features = extract_prosody_features(waveform, sr)
+    prosody_score = score_prosody_anomaly(prosody_features)
+
+    # Dual-layer score fusion (configurable weighted average)
+    fused_score = float(np.clip(
+        SPECTRAL_WEIGHT * spectral_score + PROSODY_WEIGHT * prosody_score,
+        0.0,
+        1.0
+    ))
+
+    # Physical Phone/Loudspeaker Replay AI Detection
     is_phone_replay = bool(
         replay_score >= 0.52 or
-        (replay_score >= 0.42 and (spoof_raw >= 0.12 or spoof_boost >= 0.18 or prosody_score >= 0.45)) or
+        (replay_score >= 0.42 and (spectral_score >= 0.18 or spoof_boost >= 0.18 or prosody_score >= 0.45)) or
         (spoof_boost >= 0.50 and replay_score >= 0.38)
     )
 
     is_direct_ai = bool(
-        spoof_raw >= 0.50 or
+        spectral_score >= 0.50 or
+        (spectral_score >= 0.40 and prosody_score >= 0.45) or
         (spoof_boost >= 0.65 and prosody_score >= 0.40)
     )
 
     if is_direct_ai:
-        final_spoof = max(spoof_raw, spoof_boost, 0.78)
+        final_spoof = max(fused_score, spectral_score, 0.78 if spectral_score >= 0.65 else 0.55)
         detection_mode = "DIRECT_AI"
     elif is_phone_replay:
         # Replay attack: elevate spoof score reliably to High Risk (>= 0.74)
         replay_elevated = 0.62 + 0.28 * replay_score + 0.10 * prosody_score
-        final_spoof = max(0.74, replay_elevated, spoof_boost * 1.35, spoof_raw * 1.6)
+        final_spoof = max(0.74, replay_elevated, fused_score, spectral_score * 1.35)
         detection_mode = "PHONE_REPLAY_AI"
     else:
         # Confirmed live organic human speech
-        if replay_score < 0.35:
-            final_spoof = min(spoof_raw, 0.20)
+        if replay_score < 0.35 and prosody_score < 0.35:
+            final_spoof = min(fused_score, 0.20)
         else:
-            final_spoof = min(spoof_raw, 0.35)
+            final_spoof = min(fused_score, 0.35)
         detection_mode = "LIVE_HUMAN"
 
     final_spoof = min(0.999, max(0.01, float(final_spoof)))
@@ -411,8 +659,39 @@ def evaluate_window_threat(waveform: torch.Tensor, sr: int = 16000):
     result_label = "spoof" if final_spoof >= 0.50 else "real"
     confidence = final_spoof if result_label == "spoof" else bonafide_prob
 
+    flagged_spectral = bool(spectral_score >= 0.50)
+    flagged_prosody = bool(prosody_score >= 0.50)
+    dual_layer_flagged = bool(flagged_spectral and flagged_prosody)
+
+    score_breakdown = {
+        "spectral_score": round(spectral_score, 4),
+        "prosody_score": round(prosody_score, 4),
+        "final_score": round(final_spoof, 4),
+        "spectral_weight": SPECTRAL_WEIGHT,
+        "prosody_weight": PROSODY_WEIGHT,
+        "flagged_spectral": flagged_spectral,
+        "flagged_prosody": flagged_prosody,
+        "dual_layer_flagged": dual_layer_flagged,
+    }
+
     forensics["is_phone_replay"] = is_phone_replay
-    return final_spoof, bonafide_prob, risk, status, result_label, confidence, detection_mode, forensics
+    forensics["spectral_score"] = round(spectral_score, 4)
+    forensics["prosody_score"] = round(prosody_score, 4)
+    forensics["final_score"] = round(final_spoof, 4)
+    forensics["score_breakdown"] = score_breakdown
+    forensics["prosody_features"] = prosody_features
+
+    return (
+        final_spoof,
+        bonafide_prob,
+        risk,
+        status,
+        result_label,
+        confidence,
+        detection_mode,
+        forensics,
+        score_breakdown
+    )
 
 
 # ============================================================
@@ -780,7 +1059,8 @@ def predict_audio(file):
                 seg_label,
                 seg_conf,
                 seg_detection_mode,
-                seg_forensics
+                seg_forensics,
+                seg_breakdown
             ) = evaluate_window_threat(
                 segment_waveform
             )
@@ -808,17 +1088,31 @@ def predict_audio(file):
                         bonafide_probability,
                         4
                     ),
+                    "spectral_score": round(
+                        seg_breakdown["spectral_score"],
+                        4
+                    ),
+                    "prosody_score": round(
+                        seg_breakdown["prosody_score"],
+                        4
+                    ),
+                    "final_score": round(
+                        seg_breakdown["final_score"],
+                        4
+                    ),
+                    "score_breakdown": seg_breakdown,
                     "risk": seg_risk,
                     "status": seg_status,
                     "detection_mode": seg_detection_mode,
                     "rms": round(seg_rms, 4),
-                    "forensics": seg_forensics
+                    "forensics": seg_forensics,
+                    "prosody_features": seg_forensics.get("prosody_features", {})
                 }
             )
 
 
         # ====================================================
-        # AGGREGATE COMPLETE AUDIO
+        # AGGREGATE COMPLETE AUDIO (DUAL-LAYER FUSION)
         # ====================================================
 
         # Filter active speech segments (RMS >= 0.002) so ambient silence doesn't skew results
@@ -829,46 +1123,99 @@ def predict_audio(file):
         if not speech_segments:
             speech_segments = segment_results
 
-        speech_spoof_probs = [
-            result["spoof_probability"]
+        speech_spectral_scores = [
+            result.get("spectral_score", result["spoof_probability"])
+            for result in speech_segments
+        ]
+        speech_prosody_scores = [
+            result.get("prosody_score", 0.0)
             for result in speech_segments
         ]
 
-        max_spoof_probability = max(
-            speech_spoof_probs
-        )
+        # Extract full-audio global behavioral prosody features
+        full_prosody_features = extract_prosody_features(waveform, SAMPLE_RATE)
+        full_prosody_score = score_prosody_anomaly(full_prosody_features)
 
-        max_spoof_segment = max(
-            speech_segments,
-            key=lambda x: x[
-                "spoof_probability"
-            ]
-        )
+        # 1. Aggregate Spectral Scores across speech windows
+        max_spectral_score = max(speech_spectral_scores)
+        avg_spectral_score = sum(speech_spectral_scores) / len(speech_spectral_scores)
 
-        average_spoof_probability = (
-            sum(speech_spoof_probs)
-            /
-            len(speech_spoof_probs)
-        )
-
-        # Robust aggregation: blend peak speech window and average speech windows
-        # If a replay attack or high-confidence deepfake window is caught, prevent dilution from quieter segments
-        if len(speech_spoof_probs) == 1:
-            overall_spoof_probability = max_spoof_probability
+        if len(speech_spectral_scores) == 1:
+            overall_spectral_score = max_spectral_score
         else:
             has_replay_attack = any(
                 s.get("detection_mode") == "PHONE_REPLAY_AI" and s.get("spoof_probability", 0) >= 0.65
                 for s in speech_segments
             )
-            if has_replay_attack or max_spoof_probability >= 0.70:
-                overall_spoof_probability = 0.65 * max_spoof_probability + 0.35 * average_spoof_probability
+            if has_replay_attack or max_spectral_score >= 0.70:
+                overall_spectral_score = 0.65 * max_spectral_score + 0.35 * avg_spectral_score
             else:
-                overall_spoof_probability = 0.4 * max_spoof_probability + 0.6 * average_spoof_probability
+                overall_spectral_score = 0.40 * max_spectral_score + 0.60 * avg_spectral_score
+
+        # 2. Aggregate Behavioral Prosodic Scores (blend global recording and window averages)
+        if full_prosody_features.get("has_voiced", False):
+            overall_prosody_score = 0.60 * full_prosody_score + 0.40 * float(np.mean(speech_prosody_scores))
+        else:
+            overall_prosody_score = float(np.mean(speech_prosody_scores)) if speech_prosody_scores else full_prosody_score
+
+        # 3. FUSE SPECTRAL + PROSODIC SCORES INTO FINAL SCORE
+        overall_final_score = float(np.clip(
+            SPECTRAL_WEIGHT * overall_spectral_score + PROSODY_WEIGHT * overall_prosody_score,
+            0.0,
+            1.0
+        ))
+
+        # Check for replay or high-confidence deepfake window overrides
+        if any(s.get("detection_mode") == "PHONE_REPLAY_AI" and s.get("spoof_probability", 0) >= 0.65 for s in speech_segments):
+            overall_final_score = max(overall_final_score, 0.74)
+        elif overall_spectral_score >= 0.75:
+            overall_final_score = max(overall_final_score, 0.70)
+        elif overall_spectral_score < 0.20 and overall_prosody_score < 0.25:
+            overall_final_score = min(overall_final_score, 0.20)
+
+        overall_final_score = float(np.clip(overall_final_score, 0.01, 0.999))
+
+        flagged_spectral = bool(overall_spectral_score >= 0.50)
+        flagged_prosody = bool(overall_prosody_score >= 0.50)
+        dual_layer_flagged = bool(flagged_spectral and flagged_prosody)
+
+        score_breakdown = {
+            "spectral_score": round(overall_spectral_score, 4),
+            "prosody_score": round(overall_prosody_score, 4),
+            "final_score": round(overall_final_score, 4),
+            "spectral_weight": SPECTRAL_WEIGHT,
+            "prosody_weight": PROSODY_WEIGHT,
+            "flagged_spectral": flagged_spectral,
+            "flagged_prosody": flagged_prosody,
+            "dual_layer_flagged": dual_layer_flagged,
+            "layer_summary": (
+                "Flagged on both acoustic and behavioral layers"
+                if dual_layer_flagged
+                else (
+                    "Flagged on acoustic CNN layer"
+                    if flagged_spectral
+                    else (
+                        "Flagged on behavioral prosodic layer"
+                        if flagged_prosody
+                        else "Verified natural on both acoustic and behavioral layers"
+                    )
+                )
+            ),
+        }
+
+        # Select most suspicious segment based on final fused score
+        max_spoof_segment = max(
+            speech_segments,
+            key=lambda x: x.get(
+                "final_score",
+                x.get("spoof_probability", 0)
+            )
+        )
 
         suspicious_segments = [
             result
             for result in segment_results
-            if result["spoof_probability"] >= 0.50
+            if result.get("final_score", result["spoof_probability"]) >= 0.50
         ]
 
         suspicious_count = len(
@@ -884,7 +1231,7 @@ def predict_audio(file):
         # FINAL DECISION (Calibrated threshold >= 0.50)
         # ====================================================
 
-        if overall_spoof_probability >= 0.50:
+        if overall_final_score >= 0.50:
 
             prediction = "spoof"
 
@@ -900,14 +1247,14 @@ def predict_audio(file):
         if prediction == "spoof":
 
             confidence = (
-                overall_spoof_probability
+                overall_final_score
             )
 
         else:
 
             confidence = (
                 1.0 -
-                overall_spoof_probability
+                overall_final_score
             )
 
 
@@ -915,11 +1262,11 @@ def predict_audio(file):
         # RISK LEVEL (Calibrated: >= 0.70 HIGH, >= 0.50 MEDIUM, < 0.50 LOW)
         # ====================================================
 
-        if overall_spoof_probability >= 0.70:
+        if overall_final_score >= 0.70:
 
             risk = "HIGH"
 
-        elif overall_spoof_probability >= 0.50:
+        elif overall_final_score >= 0.50:
 
             risk = "MEDIUM"
 
@@ -945,23 +1292,44 @@ def predict_audio(file):
                 4
             ),
 
+            # Backward-compatible spoof_probability reflecting the final fused score
             "spoof_probability": round(
-                overall_spoof_probability,
+                overall_final_score,
                 4
             ),
 
+            # Multi-layer score breakdown
+            "spectral_score": round(
+                overall_spectral_score,
+                4
+            ),
+
+            "prosody_score": round(
+                overall_prosody_score,
+                4
+            ),
+
+            "final_score": round(
+                overall_final_score,
+                4
+            ),
+
+            "score_breakdown": score_breakdown,
+
+            "prosody_features": full_prosody_features,
+
             "max_spoof_probability": round(
-                max_spoof_probability,
+                max(s.get("final_score", s["spoof_probability"]) for s in segment_results),
                 4
             ),
 
             "bonafide_probability": round(
-                1.0 - overall_spoof_probability,
+                1.0 - overall_final_score,
                 4
             ),
 
             "average_spoof_probability": round(
-                average_spoof_probability,
+                sum(s.get("final_score", s["spoof_probability"]) for s in segment_results) / len(segment_results),
                 4
             ),
 
@@ -981,15 +1349,25 @@ def predict_audio(file):
                 "end_time": max_spoof_segment[
                     "end_time"
                 ],
-                "spoof_probability": max_spoof_segment[
-                    "spoof_probability"
-                ]
+                "spoof_probability": max_spoof_segment.get(
+                    "final_score",
+                    max_spoof_segment.get("spoof_probability")
+                ),
+                "spectral_score": max_spoof_segment.get(
+                    "spectral_score",
+                    max_spoof_segment.get("spoof_probability")
+                ),
+                "prosody_score": max_spoof_segment.get("prosody_score", 0.0),
+                "final_score": max_spoof_segment.get(
+                    "final_score",
+                    max_spoof_segment.get("spoof_probability")
+                )
             },
 
             "segments": segment_results,
 
             "impersonation_assessment": assess_impersonation_threat(
-                overall_spoof_probability,
+                overall_final_score,
                 segment_results,
                 getattr(file, "filename", "audio_sample.wav")
             )

@@ -66,10 +66,18 @@ def process_pcm_window(pcm_bytes):
 
     if raw_rms < 0.005 and raw_peak < 0.025:
         # Ambient silence / room noise
-        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", {}
+        breakdown = {
+            "spectral_score": 0.05,
+            "prosody_score": 0.05,
+            "final_score": 0.05,
+            "flagged_spectral": False,
+            "flagged_prosody": False,
+            "dual_layer_flagged": False,
+        }
+        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", {}, breakdown
 
-    sp, bp, risk, status, label, conf, detection_mode, forensics = evaluate_window_threat(waveform, sr=16000)
-    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode, forensics
+    sp, bp, risk, status, label, conf, detection_mode, forensics, score_breakdown = evaluate_window_threat(waveform, sr=16000)
+    return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode, forensics, score_breakdown
 
 
 # ---------------------------------------------------------
@@ -112,7 +120,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Early Feedback: evaluate first 2s immediately if user just started speaking
             if analysis_count == 0 and len(audio_buffer) >= HOP_BYTES and len(audio_buffer) < WINDOW_BYTES:
                 chunk_bytes = bytes(audio_buffer[:HOP_BYTES])
-                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics = process_pcm_window(chunk_bytes)
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown = process_pcm_window(chunk_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
 
@@ -149,9 +157,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 speech_tag = "SPEECH" if is_speech else "SILENCE"
                 rep_sc = forensics.get("replay_score", 0)
                 pros_sc = forensics.get("prosody_score", 0)
+                spec_sc = score_breakdown.get("spectral_score", sp)
                 print(
-                    f"[02s] {badge} | Spoof: {effective_sp*100:5.1f}% (raw {sp*100:5.1f}%) | Conf: {conf*100:5.1f}% | "
-                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f} | pros: {pros_sc:.2f}",
+                    f"[02s] {badge} | Spoof: {effective_sp*100:5.1f}% (spec {spec_sc*100:5.1f}%, pros {pros_sc*100:5.1f}%) | Conf: {conf*100:5.1f}% | "
+                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f}",
                     flush=True
                 )
                 is_early_4s = True
@@ -159,6 +168,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "prediction",
                     "spoof_probability": round(effective_sp, 4),
+                    "spectral_score": round(spec_sc, 4),
+                    "prosody_score": round(pros_sc, 4),
+                    "final_score": round(effective_sp, 4),
+                    "score_breakdown": score_breakdown,
                     "confidence": round(conf, 4),
                     "risk": effective_risk,
                     "result": effective_label,
@@ -181,7 +194,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 window_bytes = bytes(audio_buffer[:WINDOW_BYTES])
                 del audio_buffer[:HOP_BYTES]
 
-                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics = process_pcm_window(window_bytes)
+                sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown = process_pcm_window(window_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
                 elapsed = analysis_count * HOP_SECONDS
@@ -223,9 +236,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 speech_tag = "SPEECH" if is_speech else "SILENCE"
                 rep_sc = forensics.get("replay_score", 0)
                 pros_sc = forensics.get("prosody_score", 0)
+                spec_sc = score_breakdown.get("spectral_score", sp)
                 print(
-                    f"[{elapsed:02d}s] {badge} | Spoof: {effective_sp*100:5.1f}% (raw {sp*100:5.1f}%) | Conf: {conf*100:5.1f}% | "
-                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f} | pros: {pros_sc:.2f}",
+                    f"[{elapsed:02d}s] {badge} | Spoof: {effective_sp*100:5.1f}% (spec {spec_sc*100:5.1f}%, pros {pros_sc*100:5.1f}%) | Conf: {conf*100:5.1f}% | "
+                    f"RMS: {rms:.4f} ({speech_tag}) | Mode: {effective_mode} | sm: {forensics.get('sub_mid_ratio', 0):.2f} | rep: {rep_sc:.2f}",
                     flush=True
                 )
                 is_early_4s = elapsed <= 4
@@ -233,6 +247,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "prediction",
                     "spoof_probability": round(effective_sp, 4),
+                    "spectral_score": round(spec_sc, 4),
+                    "prosody_score": round(pros_sc, 4),
+                    "final_score": round(effective_sp, 4),
+                    "score_breakdown": score_breakdown,
                     "confidence": round(conf, 4),
                     "risk": effective_risk,
                     "result": effective_label,
@@ -264,7 +282,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # Process any remaining speech tail if at least 1 second of audio remains
         if len(audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE:
-            sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics = process_pcm_window(bytes(audio_buffer))
+            sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown = process_pcm_window(bytes(audio_buffer))
             session_spoof_probs.append(sp)
             analysis_count += 1
             badge = "[ALERT] AI DEEPFAKE (PHONE REPLAY)" if (mode == "PHONE_REPLAY_AI" and sp >= 0.50) else ("[ALERT] AI DEEPFAKE" if sp >= 0.70 else ("[WARN]  SUSPICIOUS" if sp >= 0.50 else "[OK]    BONAFIDE"))

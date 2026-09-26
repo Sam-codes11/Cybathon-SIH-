@@ -154,7 +154,11 @@ function Result() {
       icon: Activity,
       name: "Pitch Dynamics & Voice Modulation",
       flagged: !isReal,
-      value: !isReal ? "Abnormal or flat pitch variation" : "Natural pitch modulation",
+      value: backendData?.prosody_features
+        ? `${!isReal ? "Abnormal" : "Natural"} pitch modulation (F0 std: ${backendData.prosody_features.f0_std} Hz, range: ${backendData.prosody_features.f0_range} Hz)`
+        : !isReal
+        ? "Abnormal or flat pitch variation"
+        : "Natural pitch modulation",
     },
     {
       id: "spectral_phase",
@@ -556,6 +560,114 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                 </div>
               </motion.article>
             </div>
+
+            {/* DUAL-LAYER DETECTION BREAKDOWN (Acoustic CNN + Behavioral Prosody) */}
+            {(backendData?.spectral_score !== undefined || backendData?.score_breakdown) && (
+              <motion.section
+                {...animation}
+                transition={{ duration: 0.6, delay: 0.28 }}
+                className="mt-8 rounded-[1.75rem] border border-[#d7ddea] bg-white p-6 shadow-sm sm:p-8"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <span className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+                      Multi-Layer Defense Architecture
+                    </span>
+                    <h3 className="mt-1 text-xl font-bold text-[#14213b]">
+                      Dual-Layer Forensic Detection Breakdown
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Fused acoustic STFT spectrogram neural inference with behavioral prosodic and pitch dynamics.
+                    </p>
+                  </div>
+                  {backendData?.score_breakdown?.dual_layer_flagged ? (
+                    <span className="self-start rounded-full border border-red-200 bg-red-100 px-3 py-1 text-xs font-bold text-red-700">
+                      Flagged on both acoustic & behavioral layers
+                    </span>
+                  ) : (
+                    <span className="self-start rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                      {backendData?.score_breakdown?.layer_summary || "Multi-Layer Fused Analysis"}
+                    </span>
+                  )}
+                </div>
+
+                <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                  {/* Layer 1: Acoustic Spectral */}
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Layer 1 · Acoustic Spectrogram
+                    </p>
+                    <p className="mt-2 font-mono text-2xl font-bold text-slate-900">
+                      {backendData?.spectral_score !== undefined
+                        ? `${(backendData.spectral_score * 100).toFixed(1)}%`
+                        : "--"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      CNN STFT spectral density analysis (Weight 70%)
+                    </p>
+                    <span
+                      className={`mt-3 inline-block rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                        (backendData?.spectral_score ?? 0) >= 0.50
+                          ? "bg-red-100 text-red-700"
+                          : "bg-emerald-100 text-emerald-700"
+                      }`}
+                    >
+                      {(backendData?.spectral_score ?? 0) >= 0.50 ? "Flagged (Acoustic)" : "Normal"}
+                    </span>
+                  </div>
+
+                  {/* Layer 2: Behavioral Prosody */}
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Layer 2 · Behavioral Prosody
+                    </p>
+                    <p className="mt-2 font-mono text-2xl font-bold text-slate-900">
+                      {backendData?.prosody_score !== undefined
+                        ? `${(backendData.prosody_score * 100).toFixed(1)}%`
+                        : "--"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      F0 pitch variance, pauses & jitter (Weight 30%)
+                    </p>
+                    <span
+                      className={`mt-3 inline-block rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                        (backendData?.prosody_score ?? 0) >= 0.50
+                          ? "bg-red-100 text-red-700"
+                          : "bg-emerald-100 text-emerald-700"
+                      }`}
+                    >
+                      {(backendData?.prosody_score ?? 0) >= 0.50 ? "Flagged (Behavioral)" : "Normal"}
+                    </span>
+                  </div>
+
+                  {/* Fused Final Threat */}
+                  <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-indigo-700">
+                      Fused Final Score
+                    </p>
+                    <p className="mt-2 font-mono text-2xl font-bold text-indigo-950">
+                      {backendData?.final_score !== undefined
+                        ? `${(backendData.final_score * 100).toFixed(1)}%`
+                        : `${(spoofProbability * 100).toFixed(1)}%`}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      Calibrated dual-layer weighted fusion
+                    </p>
+                    <span
+                      className={`mt-3 inline-block rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                        (backendData?.final_score ?? spoofProbability) >= 0.50
+                          ? "bg-red-200 text-red-800"
+                          : "bg-emerald-200 text-emerald-800"
+                      }`}
+                    >
+                      {(backendData?.final_score ?? spoofProbability) >= 0.50
+                        ? "Spoof Detected"
+                        : "Genuine Voice"}
+                    </span>
+                  </div>
+                </div>
+              </motion.section>
+            )}
 
             {/* STEP 2: ON WHAT PARAMETERS IT DETECTED AI (Requested Section) */}
             <motion.section
