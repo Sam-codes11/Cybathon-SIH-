@@ -1,0 +1,33 @@
+services:
+  # VoiceGuard FastAPI Backend
+  - type: web
+    name: voiceguard-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install --upgrade pip && pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu && pip install -r Backend/requirements.txt"
+    startCommand: "cd Backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: VG_ENABLE_ACTION_ESCALATE
+        value: "1"
+      - key: VG_ENABLE_PER_SPEAKER_SCORES
+        value: "1"
+      - key: VG_ENABLE_NUMBER_RISK
+        value: "1"
+      - key: VG_ENABLE_SESSION_HISTORY
+        value: "1"
+
+  # VoiceGuard React 19 Frontend
+  - type: web
+    name: voiceguard-frontend
+    env: static
+    region: oregon
+    plan: free
+    buildCommand: "cd frontend && npm install && npm run build"
+    staticPublishPath: "frontend/dist"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

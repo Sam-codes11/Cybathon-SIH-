@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - VG_ENABLE_ACTION_ESCALATE=1
+      - VG_ENABLE_PER_SPEAKER_SCORES=1
+      - VG_ENABLE_NUMBER_RISK=1
+      - VG_ENABLE_SESSION_HISTORY=1
+      - VG_ALLOWED_ORIGINS=http://localhost,http://localhost:80,http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      - voiceguard_data:/app/Backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  voiceguard_data:
