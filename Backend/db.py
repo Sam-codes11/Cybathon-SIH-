@@ -1,8 +1,10 @@
 import sqlite3
 import json
 import time
+from pathlib import Path
 from contextlib import contextmanager
-DB_PATH = "voiceguard.db"
+
+DB_PATH = str(Path(__file__).resolve().parent / "voiceguard.db")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()

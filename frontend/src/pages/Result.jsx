@@ -23,7 +23,9 @@ import {
   Download,
   Activity,
   Volume2,
-  DollarSign
+  DollarSign,
+  Radio,
+  Info
 } from "lucide-react"
 import { motion, useReducedMotion } from "framer-motion"
 import Navbar from "../components/Navbar"
@@ -157,6 +159,39 @@ function TrustBadge({ isMatch, similarity, status }) {
   )
 }
 
+const ATTACK_TYPE_LABELS = {
+  financial_extortion: "Financial Extortion Attempt",
+  otp_phishing: "OTP / Code Phishing",
+  digital_arrest_scam: "Digital Arrest Scam Pattern",
+  impersonation_authority: "Authority Impersonation Claim",
+  urgency_pressure: "High-Pressure Urgency Tactics",
+}
+
+// Content Risk / Social-Engineering Panel (section 3.5 of the build guide)
+function ContentRiskPanel({ attackType, flaggedPhrases, transcript }) {
+  if (!attackType && (!flaggedPhrases || !flaggedPhrases.length)) return null
+  return (
+    <div className="mt-4 rounded-xl border border-[#c68a98] bg-[#fbf4f6] p-4 text-left shadow-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold uppercase tracking-wider text-[#914459]">
+          Content Risk Detected
+        </p>
+        <span className="rounded-full bg-[#f3d9df] px-2.5 py-0.5 text-[10px] font-bold text-[#8d4257]">
+          Social Engineering Pattern
+        </span>
+      </div>
+      <p className="mt-1 font-semibold text-slate-900">
+        {ATTACK_TYPE_LABELS[attackType] || attackType}
+      </p>
+      {transcript && (
+        <p className="mt-2 text-xs text-[#667389] italic">
+          Transcript excerpt: "{transcript.slice(0, 140)}{transcript.length > 140 ? "..." : ""}"
+        </p>
+      )}
+    </div>
+  )
+}
+
 function Result() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -185,12 +220,14 @@ function Result() {
     backendData?.status === "likely_real" ||
     backendData?.result === "real"
 
-  const callerRelationship = location.state?.callerRelationship || backendData?.callerRelationship || "no"
+  const [callerRelationship, setCallerRelationship] = useState(
+    location.state?.callerRelationship || backendData?.callerRelationship || "no"
+  )
   const isImpersonation =
+    callerRelationship === "yes" ||
     location.state?.isImpersonationAttack ||
-    backendData?.isImpersonationAttack ||
-    callerRelationship === "yes"
-  const isUnknownCaller = callerRelationship === "no" || (!isImpersonation && !isReal)
+    backendData?.isImpersonationAttack
+  const isUnknownCaller = callerRelationship === "no"
 
   if (backendData?.silent) {
     return (
@@ -239,6 +276,22 @@ function Result() {
 
   const riskLevel = backendData?.risk || (riskScore >= 70 ? "HIGH" : riskScore >= 50 ? "MEDIUM" : "LOW")
   const automatedAction = getAutomatedAction(riskLevel)
+
+  const forensicsData = backendData?.forensics || {}
+  const replayScoreVal = forensicsData.replay_score !== undefined ? Number(forensicsData.replay_score) : 0.05
+  const prosodyScoreVal = forensicsData.prosody_score !== undefined ? Number(forensicsData.prosody_score) : 0.05
+
+  const isUnknownReplay = replayScoreVal >= 0.5
+  const isUnknownSynthetic = prosodyScoreVal >= 0.5
+  const hasUnknownContentRisk = Boolean(backendData?.attack_type && ATTACK_TYPE_LABELS[backendData.attack_type])
+  const unknownContentLabel = backendData?.attack_type ? (ATTACK_TYPE_LABELS[backendData.attack_type] || backendData.attack_type) : null
+  const isUnknownNoneFlagged = !isUnknownReplay && !isUnknownSynthetic && !hasUnknownContentRisk
+
+  const isRiskAlertActive =
+    !isReal ||
+    riskLevel === "HIGH" ||
+    riskLevel === "MEDIUM" ||
+    Boolean(backendData?.attack_type)
 
   // Impersonation & Attack Vector Assessment
   let attackVectorTitle = isReal
@@ -490,8 +543,19 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
               </div>
             </motion.div>
 
-            {/* Alert Banner if AI Spoofed */}
-            {!isReal && (
+            {/* Social Engineering / Content Risk Panel (Phase 3) */}
+            {(backendData?.attack_type || (backendData?.flagged_phrases && backendData.flagged_phrases.length > 0)) && (
+              <motion.div {...animation} transition={{ duration: 0.5, delay: 0.08 }}>
+                <ContentRiskPanel
+                  attackType={backendData.attack_type}
+                  flaggedPhrases={backendData.flagged_phrases}
+                  transcript={backendData.transcript}
+                />
+              </motion.div>
+            )}
+
+            {/* Decoupled Risk Banner - Renders immediately whenever risk is HIGH/MEDIUM or attack_type is set */}
+            {isRiskAlertActive && (
               <motion.div
                 {...animation}
                 transition={{ duration: 0.5, delay: 0.1 }}
@@ -509,7 +573,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="rounded bg-black/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#fee2e2]">
-                          {isImpersonation ? "IMPERSONATION ATTACK" : "SYNTHETIC CALL DETECTED"}
+                          {isImpersonation ? "IMPERSONATION ATTACK" : backendData?.attack_type ? "CONTENT & VOICE RISK" : "SYNTHETIC CALL DETECTED"}
                         </span>
                         {intercepted && (
                           <span className="rounded bg-white/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
@@ -520,12 +584,14 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                       <h2 className="mt-1 text-lg font-bold text-white">
                         {isImpersonation
                           ? "Active Voice Clone Impersonation Detected"
+                          : backendData?.attack_type
+                          ? `High Risk Scam Pattern: ${ATTACK_TYPE_LABELS[backendData.attack_type] || backendData.attack_type}`
                           : "AI-Generated Voice Call Flagged"}
                       </h2>
                       <p className="mt-1 text-xs text-[#ffe4e6]">
                         {isImpersonation
                           ? "The caller claimed familiarity, but our model identified synthetic markers matching emergency extortion or Digital Arrest templates."
-                          : "High probability of AI text-to-speech or voice conversion. Do not comply with financial requests."}
+                          : "High probability of AI text-to-speech, acoustic replay, or coercive scam tactics. Do not comply with financial requests."}
                       </p>
                     </div>
                   </div>
@@ -543,22 +609,22 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
               </motion.div>
             )}
 
-            {/* UNKNOWN CALLER: FORENSIC PDF REPORT GENERATED BANNER */}
-            {isUnknownCaller && (
+            {/* UNKNOWN CALLER: BREAKDOWN PANEL & PDF READY BANNER */}
+            {callerRelationship === "no" && (
               <motion.div
                 {...animation}
                 transition={{ duration: 0.5, delay: 0.12 }}
                 className="mt-6 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/95 via-sky-50/90 to-indigo-50/95 p-5 shadow-sm sm:p-6"
               >
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-blue-200/80 pb-4">
                   <div className="flex items-start gap-3.5">
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-md">
-                      <FileText className="h-6 w-6" />
+                      <Bot className="h-6 w-6" />
                     </div>
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-blue-200/80 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-900">
-                          Unknown Caller
+                          Unknown Caller Breakdown
                         </span>
                         <span className="rounded-full bg-[#d9efea] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#28756f]">
                           PDF Report Ready
@@ -567,23 +633,23 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                           className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
                             isReal
                               ? "bg-[#d9efea] text-[#28756f]"
-                              : (backendData?.risk === "HIGH" || riskScore >= 70)
+                              : (riskLevel === "HIGH" || riskScore >= 70)
                               ? "bg-[#f5e4e9] text-[#8d4257]"
                               : "bg-[#f4eadf] text-[#92674b]"
                           }`}
                         >
                           {isReal
                             ? "Low Risk"
-                            : (backendData?.risk === "HIGH" || riskScore >= 70)
+                            : (riskLevel === "HIGH" || riskScore >= 70)
                             ? "High Risk"
                             : "Medium Risk"}
                         </span>
                       </div>
                       <h3 className="mt-1.5 text-base font-bold text-slate-900">
-                        Call Verification PDF Report Prepared
+                        Unknown Caller Threat Evaluation
                       </h3>
                       <p className="mt-0.5 text-xs text-slate-600">
-                        Voice Shield generated a call report for this unknown caller with evaluated audio parameters, risk score ({riskScore}/100), and recommended next steps.
+                        Evaluated against acoustic loudspeaker replay, synthetic prosody, and known scam coercion patterns.
                       </p>
                     </div>
                   </div>
@@ -592,11 +658,122 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                     <button
                       type="button"
                       onClick={downloadReportFile}
-                      className="inline-flex items-center gap-2 rounded-xl bg-[#426fae] px-5 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-[#355f99] hover:shadow-lg"
+                      className="inline-flex items-center gap-2 rounded-xl bg-[#426fae] px-4 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-[#355f99] hover:shadow-lg"
                     >
                       <Download className="h-4 w-4" />
                       Download PDF Report
                     </button>
+                  </div>
+                </div>
+
+                {/* 3 Checks Breakdown */}
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  {/* Check 1: Replay/loudspeaker attack */}
+                  <div className="rounded-xl border border-white/80 bg-white/70 p-3 shadow-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Acoustic Replay</span>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                        isUnknownReplay ? "bg-red-100 text-red-700 font-bold" : "bg-emerald-100 text-emerald-700"
+                      }`}>
+                        {isUnknownReplay ? "FLAGGED" : "CLEARED"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs font-semibold text-slate-900">
+                      Replay / loudspeaker attack {isUnknownReplay ? "detected" : "not detected"}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Score: {replayScoreVal.toFixed(2)}
+                      {isUnknownReplay ? " (Threshold >= 0.50 exceeded)" : " (Below 0.50 threshold)"}
+                    </p>
+                  </div>
+
+                  {/* Check 2: Synthetic voice pattern */}
+                  <div className="rounded-xl border border-white/80 bg-white/70 p-3 shadow-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Prosody Pattern</span>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                        isUnknownSynthetic ? "bg-red-100 text-red-700 font-bold" : "bg-emerald-100 text-emerald-700"
+                      }`}>
+                        {isUnknownSynthetic ? "FLAGGED" : "CLEARED"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs font-semibold text-slate-900">
+                      Synthetic voice pattern {isUnknownSynthetic ? "detected" : "not detected"}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Score: {prosodyScoreVal.toFixed(2)}
+                      {isUnknownSynthetic ? " (Threshold >= 0.50 exceeded)" : " (Below 0.50 threshold)"}
+                    </p>
+                  </div>
+
+                  {/* Check 3: Content risk pattern */}
+                  <div className="rounded-xl border border-white/80 bg-white/70 p-3 shadow-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Content Risk</span>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                        hasUnknownContentRisk ? "bg-red-100 text-red-700 font-bold" : "bg-emerald-100 text-emerald-700"
+                      }`}>
+                        {hasUnknownContentRisk ? "FLAGGED" : "CLEARED"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs font-semibold text-slate-900">
+                      Content risk pattern {hasUnknownContentRisk ? `matched: ${unknownContentLabel}` : "not matched"}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500 truncate">
+                      {hasUnknownContentRisk ? `Pattern: ${backendData.attack_type}` : "No coercion or phishing phrases"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Fallback message if none of the above are flagged */}
+                {isUnknownNoneFlagged && (
+                  <div className="mt-3.5 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    <CircleAlert className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+                    <p className="text-xs leading-relaxed">
+                      No specific acoustic replay, synthetic prosody, or scam keywords detected above individual thresholds; overall risk flagged by multi-layer neural baseline.
+                    </p>
+                  </div>
+                )}
+              </motion.div>
+            )}
+
+            {/* KNOWN CALLER: TARGETED IMPERSONATION WARNING PANEL */}
+            {callerRelationship === "yes" && (
+              <motion.div
+                {...animation}
+                transition={{ duration: 0.5, delay: 0.12 }}
+                className="mt-6 rounded-2xl border border-red-300 bg-gradient-to-r from-red-50 via-rose-50 to-orange-50 p-5 shadow-sm sm:p-6"
+              >
+                <div className="flex items-start gap-3.5">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white shadow-md">
+                    <UserX className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-red-200 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-900">
+                        Targeted Impersonation Attack
+                      </span>
+                      <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-[10px] font-bold text-red-800">
+                        Voice Clone Extortion
+                      </span>
+                    </div>
+                    <h3 className="mt-1.5 text-base font-bold text-slate-900">
+                      Suspected Impersonation of Known Contact
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-700 leading-relaxed">
+                      The caller claimed to be a family member, child, friend, police officer, or bank manager, but synthetic neural markers were identified in their voice. Scammers use cloned voices to simulate emergencies or conduct Digital Arrest scams.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-red-800">
+                      <span className="rounded-lg bg-white/80 px-2.5 py-1 border border-red-200">
+                        🛑 Never transfer emergency funds
+                      </span>
+                      <span className="rounded-lg bg-white/80 px-2.5 py-1 border border-red-200">
+                        🔒 Challenge with a family safe-word
+                      </span>
+                      <span className="rounded-lg bg-white/80 px-2.5 py-1 border border-red-200">
+                        📞 Call back on verified saved number
+                      </span>
+                    </div>
                   </div>
                 </div>
               </motion.div>

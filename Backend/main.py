@@ -1,5 +1,6 @@
 import db, session_manager
 import voiceprint
+import content_risk, transcription
 from risk_engine import process_and_log
 db.init_db()  # run once at startup, e.g. right after "app = FastAPI()"
 import sys
@@ -82,7 +83,14 @@ def process_pcm_window(pcm_bytes):
     # window regardless of which branch (silence/speech) runs below.
     with torch.no_grad():
         spec_tensor = create_spectrogram(waveform)
-    spectrogram_list = spec_tensor.squeeze().detach().cpu().numpy().tolist()
+
+    # Compact downsampled spectrogram for WebSocket transmission (64 bins x 126 frames, 2 decimal places)
+    # Prevents exceeding WebSocket 1MB frame limit (code 1009) and eliminates transmission lag
+    spec_np = spec_tensor.squeeze().detach().cpu().numpy()
+    if spec_np.shape[0] > 64:
+        step = int(np.ceil(spec_np.shape[0] / 64))
+        spec_np = spec_np[::step, :]
+    spectrogram_list = np.round(spec_np, 2).tolist()
 
     if raw_rms < 0.005 and raw_peak < 0.025:
         # Ambient silence / room noise
@@ -94,9 +102,30 @@ def process_pcm_window(pcm_bytes):
             "flagged_prosody": False,
             "dual_layer_flagged": False,
         }
-        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", {}, breakdown, spectrogram_list
+        silence_forensics = {
+            "p_sub": 0.0,
+            "p_mid": 0.0,
+            "sub_mid_ratio": 0.40,
+            "reflection_prominence": 0.0,
+            "replay_score": 0.05,
+            "prosody_score": 0.05,
+            "jitter": 0.055,
+            "has_voiced": False,
+        }
+        return 0.05, 0.95, "LOW", "likely_real", "real", 0.95, raw_rms, False, "SILENCE", silence_forensics, breakdown, spectrogram_list
 
     sp, bp, risk, status, label, conf, detection_mode, forensics, score_breakdown = evaluate_window_threat(waveform, sr=16000)
+    if not forensics:
+        forensics = {
+            "p_sub": 0.0,
+            "p_mid": 0.0,
+            "sub_mid_ratio": 0.40,
+            "reflection_prominence": 0.0,
+            "replay_score": 0.05,
+            "prosody_score": 0.05,
+            "jitter": 0.055,
+            "has_voiced": False,
+        }
     return sp, bp, risk, status, label, conf, raw_rms, True, detection_mode, forensics, score_breakdown, spectrogram_list
 
 
@@ -197,12 +226,28 @@ async def websocket_endpoint(websocket: WebSocket):
                     flush=True
                 )
 
-                # Session + risk-action wiring (section 1.3/1.4/1.5)
+                # Speech transcription & content-risk analysis (section 3.4)
+                try:
+                    transcript = transcription.transcribe_pcm16(chunk_bytes, sample_rate=16000)
+                    if transcript:
+                        print(f"[STT 02s] Detected: '{transcript}'", flush=True)
+                except Exception as e_stt:
+                    print(f"[STT ERROR 02s] {repr(e_stt)}", flush=True)
+                    transcript = None
+                attack_type, flagged_phrases = content_risk.analyze_transcript(transcript)
+                if attack_type and effective_risk == "LOW":
+                    effective_risk = "MEDIUM"
+                    effective_status = "suspicious"
+
+                # Session + risk-action wiring (section 1.3/1.4/1.5/3.4)
                 session.add_segment(effective_sp, effective_risk, effective_mode)
-                action_info = process_and_log(session_id, effective_sp, effective_risk, effective_mode)
+                action_info = process_and_log(
+                    session_id, effective_sp, effective_risk, effective_mode,
+                    transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type
+                )
 
                 is_early_4s = True
-                impersonation_candidate = bool(effective_sp >= 0.50)
+                impersonation_candidate = bool(effective_sp >= 0.50 or attack_type is not None)
                 await websocket.send_json({
                     "type": "prediction",
                     "session_id": session_id,
@@ -221,6 +266,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "action": action_info["action"],
                     "action_message": action_info["message"],
                     "repeated_suspicious": action_info["repeated_suspicious"],
+                    "transcript": transcript,
+                    "attack_type": attack_type,
+                    "flagged_phrases": flagged_phrases,
                     "elapsed_seconds": 2,
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
@@ -287,12 +335,28 @@ async def websocket_endpoint(websocket: WebSocket):
                     flush=True
                 )
 
-                # Session + risk-action wiring (section 1.3/1.4/1.5)
+                # Speech transcription & content-risk analysis (section 3.4)
+                try:
+                    transcript = transcription.transcribe_pcm16(window_bytes, sample_rate=16000)
+                    if transcript:
+                        print(f"[STT {elapsed:02d}s] Detected: '{transcript}'", flush=True)
+                except Exception as e_stt:
+                    print(f"[STT ERROR {elapsed:02d}s] {repr(e_stt)}", flush=True)
+                    transcript = None
+                attack_type, flagged_phrases = content_risk.analyze_transcript(transcript)
+                if attack_type and effective_risk == "LOW":
+                    effective_risk = "MEDIUM"
+                    effective_status = "suspicious"
+
+                # Session + risk-action wiring (section 1.3/1.4/1.5/3.4)
                 session.add_segment(effective_sp, effective_risk, effective_mode)
-                action_info = process_and_log(session_id, effective_sp, effective_risk, effective_mode)
+                action_info = process_and_log(
+                    session_id, effective_sp, effective_risk, effective_mode,
+                    transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type
+                )
 
                 is_early_4s = elapsed <= 4
-                impersonation_candidate = bool(effective_sp >= 0.50)
+                impersonation_candidate = bool(effective_sp >= 0.50 or attack_type is not None)
                 await websocket.send_json({
                     "type": "prediction",
                     "session_id": session_id,
@@ -311,6 +375,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "action": action_info["action"],
                     "action_message": action_info["message"],
                     "repeated_suspicious": action_info["repeated_suspicious"],
+                    "transcript": transcript,
+                    "attack_type": attack_type,
+                    "flagged_phrases": flagged_phrases,
                     "elapsed_seconds": elapsed,
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,

@@ -41,6 +41,9 @@ const normaliseReport = (data, fallbackSeconds) => {
     risk,
     result: isSpoof ? "spoof" : "real",
     elapsed_seconds: data.elapsed_seconds ?? fallbackSeconds,
+    forensics: data.forensics || { replay_score: 0.05, prosody_score: 0.05 },
+    attack_type: data.attack_type ?? null,
+    flagged_phrases: data.flagged_phrases ?? [],
   }
 }
 
@@ -70,6 +73,7 @@ function Analyzing() {
   const reportsRef = useRef([])
   const consoleRef = useRef(null)
   const earlyAlertTriggeredRef = useRef(false)
+  const earlyAlertOpenRef = useRef(false)
   const callerRelationshipRef = useRef(null)
   const disposeAudioRef = useRef(null)
   const handleCutCallRef = useRef(null)
@@ -104,6 +108,7 @@ function Analyzing() {
 
     const handleCutCall = (relationship) => {
       setEarlyAlertOpen(false)
+      earlyAlertOpenRef.current = false
       callerRelationshipRef.current = relationship
       cancelled = true
       window.clearInterval(countdownId)
@@ -120,6 +125,12 @@ function Analyzing() {
       const isSpoof = bestSpoof >= 0.50
       const finalRisk = bestSpoof >= 0.70 ? "HIGH" : bestSpoof >= 0.50 ? "MEDIUM" : "LOW"
 
+      const detectedAttackReport = allReports.slice().reverse().find((r) => r.attack_type)
+      const reportWithForensics = allReports.slice().reverse().find((r) => r.forensics && (r.forensics.replay_score !== undefined || r.forensics.prosody_score !== undefined))
+      const finalForensics = earlyAlertData?.forensics || reportWithForensics?.forensics || { replay_score: 0.05, prosody_score: 0.05 }
+      const finalAttackType = earlyAlertData?.attack_type || detectedAttackReport?.attack_type || null
+      const finalFlaggedPhrases = earlyAlertData?.flagged_phrases?.length ? earlyAlertData.flagged_phrases : (detectedAttackReport?.flagged_phrases || [])
+
       const cutResult = {
         result: isSpoof ? "spoof" : "real",
         status: isSpoof ? (bestSpoof >= 0.70 ? "high_risk" : "suspicious") : "likely_real",
@@ -131,10 +142,18 @@ function Analyzing() {
         callCutOffEarly: true,
         interceptedAtSecond: earlyAlertData?.elapsed_seconds ?? 4,
         callerRelationship: relationship,
-        isImpersonationAttack: relationship === "yes",
+        isImpersonationAttack: relationship === "yes" || Boolean(finalAttackType),
         early_4s_flagged: true,
         total_segments: allReports.length || 1,
         suspicious_segments: Math.max(1, allReports.filter((r) => r.spoof_probability >= 0.50).length),
+        spectrogram: earlyAlertData?.spectrogram,
+        forensics: finalForensics,
+        attack_type: finalAttackType,
+        flagged_phrases: finalFlaggedPhrases,
+        transcript: earlyAlertData?.transcript,
+        detection_mode: earlyAlertData?.detection_mode,
+        action: earlyAlertData?.action,
+        action_message: earlyAlertData?.action_message,
         segments:
           allReports.length > 0
             ? allReports.map((r, i) => ({
@@ -170,14 +189,23 @@ function Analyzing() {
 
     const handleContinue = (relationship) => {
       setEarlyAlertOpen(false)
+      earlyAlertOpenRef.current = false
       callerRelationshipRef.current = relationship
       setCallerRelationship(relationship)
       setChallengeModeActive(true)
+      if (mode === "record") {
+        stopId = window.setTimeout(() => {
+          if (recorder?.state !== "inactive") recorder.stop()
+          disposeAudio()
+          finishId = window.setTimeout(finish, 900)
+        }, 3500)
+      }
     }
     handleContinueRef.current = handleContinue
 
     const finish = () => {
       if (cancelled) return
+      if (earlyAlertOpenRef.current) return
       socketRef.current?.close()
       socketRef.current = null
       setIsRecording(false)
@@ -202,6 +230,13 @@ function Analyzing() {
         const primaryMode = targetReports.find((r) => r.detection_mode === "PHONE_REPLAY_AI")?.detection_mode || (isSpoof ? "DIRECT_AI" : "LIVE_HUMAN")
 
         const lastReport = targetReports[targetReports.length - 1] || latestReportRef.current || {}
+        const detectedAttackReport = allReports.slice().reverse().find((r) => r.attack_type)
+        const reportWithForensics = allReports.slice().reverse().find((r) => r.forensics && (r.forensics.replay_score !== undefined || r.forensics.prosody_score !== undefined))
+        const fullTranscript = allReports
+          .map((r) => r.transcript)
+          .filter(Boolean)
+          .join(" ")
+
         const aggregatedResult = {
           result: isSpoof ? "spoof" : "real",
           status: isSpoof ? (overallScore >= 0.70 ? "high_risk" : "suspicious") : "likely_real",
@@ -209,18 +244,21 @@ function Analyzing() {
           max_spoof_probability: maxSpoofProb,
           average_spoof_probability: avgSpoofProb,
           confidence: finalConfidence,
-          risk: finalRisk,
+          risk: detectedAttackReport && finalRisk === "LOW" ? "MEDIUM" : finalRisk,
           detection_mode: primaryMode,
           total_segments: allReports.length,
           suspicious_segments: suspiciousCount,
-          callerRelationship: callerRelationshipRef.current,
-          isImpersonationAttack: callerRelationshipRef.current === "yes",
+          callerRelationship: callerRelationshipRef.current || "no",
+          isImpersonationAttack: callerRelationshipRef.current === "yes" || Boolean(detectedAttackReport),
           early_4s_flagged: earlyAlertTriggeredRef.current,
           spectrogram: lastReport.spectrogram,
-          forensics: lastReport.forensics,
+          forensics: reportWithForensics?.forensics || lastReport.forensics || { replay_score: 0.05, prosody_score: 0.05 },
           action: lastReport.action,
           action_message: lastReport.action_message,
           repeated_suspicious: lastReport.repeated_suspicious,
+          transcript: fullTranscript || lastReport.transcript,
+          attack_type: detectedAttackReport?.attack_type || lastReport.attack_type || null,
+          flagged_phrases: detectedAttackReport?.flagged_phrases || lastReport.flagged_phrases || [],
           segments: allReports.map((r, i) => ({
             segment: i + 1,
             start_time: Math.max(0, (r.elapsed_seconds ?? (i + 1) * 2) - 4),
@@ -237,24 +275,143 @@ function Analyzing() {
       }
     }
 
+    let uploadStreamIntervalId = null
+
     const analyseUpload = async (blob) => {
       if (!blob) return
-      setStage(1)
+      setStage(0)
       try {
         if (await checkSilence(blob)) {
           navigate("/result", { replace: true, state: { result: { silent: true } } })
           return
         }
-        setStage(2)
-        const formData = new FormData()
-        formData.append("file", blob, blob.name || "recording.webm")
-        const response = await fetch("http://127.0.0.1:8000/analyze", { method: "POST", body: formData })
-        if (!response.ok) throw new Error(`Backend returned ${response.status}`)
-        const result = await response.json()
-        if (!cancelled) navigate("/result", { replace: true, state: { result } })
+
+        const arrayBuffer = await blob.arrayBuffer()
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext
+        let context
+        try {
+          context = new AudioContextClass({ sampleRate: 16000 })
+        } catch {
+          context = new AudioContextClass()
+        }
+        audioContextRef.current = context
+        await context.resume()
+
+        const decodedBuffer = await context.decodeAudioData(arrayBuffer)
+        const channelData = decodedBuffer.getChannelData(0)
+
+        // Resample channelData to 16000 Hz 16-bit PCM mono
+        let pcm
+        if (decodedBuffer.sampleRate === 16000) {
+          pcm = new Int16Array(channelData.length)
+          for (let i = 0; i < channelData.length; i++) {
+            const s = Math.max(-1, Math.min(1, channelData[i]))
+            pcm[i] = s < 0 ? s * 32768 : s * 32767
+          }
+        } else {
+          const ratio = decodedBuffer.sampleRate / 16000
+          const outLength = Math.floor(channelData.length / ratio)
+          pcm = new Int16Array(outLength)
+          for (let i = 0; i < outLength; i++) {
+            const pos = i * ratio
+            const idx = Math.floor(pos)
+            const frac = pos - idx
+            const s = idx + 1 < channelData.length
+              ? channelData[idx] * (1 - frac) + channelData[idx + 1] * frac
+              : channelData[idx]
+            const clipped = Math.max(-1, Math.min(1, s))
+            pcm[i] = clipped < 0 ? clipped * 32768 : clipped * 32767
+          }
+        }
+
+        const totalSeconds = Math.max(2, Math.ceil(pcm.length / 16000))
+        setSecondsLeft(totalSeconds)
+        setIsRecording(true)
+        reportsRef.current = []
+
+        const socket = new WebSocket(getWebSocketUrl())
+        socket.binaryType = "arraybuffer"
+        socketRef.current = socket
+
+        socket.onopen = () => {
+          setStage(1)
+          let offset = 0
+          const chunkSize = 4096 // 4096 samples = 256ms
+
+          uploadStreamIntervalId = window.setInterval(() => {
+            if (cancelled || socket.readyState !== WebSocket.OPEN) {
+              window.clearInterval(uploadStreamIntervalId)
+              return
+            }
+
+            // Pause playback/streaming while the threat alert is being reviewed by the user during the call!
+            if (earlyAlertOpenRef.current) {
+              return
+            }
+
+            if (offset >= pcm.length) {
+              window.clearInterval(uploadStreamIntervalId)
+              setIsRecording(false)
+              finishId = window.setTimeout(finish, 1200)
+              return
+            }
+
+            const nextOffset = Math.min(offset + chunkSize, pcm.length)
+            const chunk = pcm.subarray(offset, nextOffset)
+            socket.send(chunk.buffer)
+            offset = nextOffset
+            const remaining = Math.max(0, Math.ceil((pcm.length - offset) / 16000))
+            setSecondsLeft(remaining)
+          }, 200)
+        }
+
+        socket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            if (data.type === "error") throw new Error(data.message)
+            if (data.type !== "prediction" || cancelled) return
+            const report = normaliseReport(data, (latestReportRef.current?.elapsed_seconds ?? 0) + 2)
+            latestReportRef.current = report
+            reportsRef.current = [...reportsRef.current, report]
+            setLiveReport(report)
+            setReports((current) => [...current, report])
+            setStage(2)
+
+            const hasRisk = (report.risk && report.risk !== "LOW") || Boolean(data.attack_type) || Boolean(report.attack_type)
+
+            if (!earlyAlertTriggeredRef.current && hasRisk) {
+              earlyAlertTriggeredRef.current = true
+              earlyAlertOpenRef.current = true
+              setEarlyAlertData(report)
+              setEarlyAlertOpen(true)
+            } else if (earlyAlertTriggeredRef.current && (data.attack_type || data.forensics)) {
+              setEarlyAlertData((prev) => ({
+                ...prev,
+                ...report,
+                forensics: report.forensics || prev?.forensics,
+                attack_type: report.attack_type || prev?.attack_type,
+                flagged_phrases: report.flagged_phrases?.length ? report.flagged_phrases : prev?.flagged_phrases,
+              }))
+            }
+          } catch (error) {
+            console.error("Live prediction error:", error)
+          }
+        }
+
+        socket.onerror = () => setErrorMessage("Live voice detection could not connect to the backend.")
       } catch (error) {
-        console.error("Upload analysis error:", error)
-        if (!cancelled) navigate("/result", { replace: true, state: { result: null } })
+        console.error("Upload streaming error, falling back to HTTP analyze:", error)
+        try {
+          const formData = new FormData()
+          formData.append("file", blob, blob.name || "recording.webm")
+          const response = await fetch("http://127.0.0.1:8000/analyze", { method: "POST", body: formData })
+          if (!response.ok) throw new Error(`Backend returned ${response.status}`)
+          const result = await response.json()
+          if (!cancelled) navigate("/result", { replace: true, state: { result } })
+        } catch (postErr) {
+          console.error("Upload analysis fallback error:", postErr)
+          if (!cancelled) navigate("/result", { replace: true, state: { result: null } })
+        }
       }
     }
 
@@ -290,16 +447,25 @@ function Analyzing() {
             setReports((current) => [...current, report])
             setStage(2)
 
-            // Early Threat Interception Check (triggers at 4s+ if High or Medium threat / Replay detected)
-            if (
-              !earlyAlertTriggeredRef.current &&
-              (data.early_4s_flagged ||
-                (report.elapsed_seconds >= 4 &&
-                  (report.risk === "HIGH" || report.risk === "MEDIUM" || report.spoof_probability >= 0.50 || data.detection_mode === "PHONE_REPLAY_AI")))
-            ) {
+            // Trigger during call: The moment a WebSocket message arrives with risk != "LOW" OR attack_type is set
+            const hasRisk = (report.risk && report.risk !== "LOW") || Boolean(data.attack_type) || Boolean(report.attack_type)
+
+            if (!earlyAlertTriggeredRef.current && hasRisk) {
               earlyAlertTriggeredRef.current = true
+              earlyAlertOpenRef.current = true
               setEarlyAlertData(report)
               setEarlyAlertOpen(true)
+              // Clear auto-stop timers so call remains intercepted while user reviews options!
+              if (stopId) window.clearTimeout(stopId)
+              if (finishId) window.clearTimeout(finishId)
+            } else if (earlyAlertTriggeredRef.current && (data.attack_type || data.forensics)) {
+              setEarlyAlertData((prev) => ({
+                ...prev,
+                ...report,
+                forensics: report.forensics || prev?.forensics,
+                attack_type: report.attack_type || prev?.attack_type,
+                flagged_phrases: report.flagged_phrases?.length ? report.flagged_phrases : prev?.flagged_phrases,
+              }))
             }
           } catch (error) {
             console.error("Live prediction error:", error)
@@ -358,8 +524,14 @@ function Analyzing() {
 
         setSecondsLeft(RECORDING_DURATION)
         setIsRecording(true)
-        countdownId = window.setInterval(() => setSecondsLeft((current) => Math.max(0, current - 1)), 1000)
+        countdownId = window.setInterval(() => {
+          if (!earlyAlertOpenRef.current) {
+            setSecondsLeft((current) => Math.max(0, current - 1))
+          }
+        }, 1000)
+
         stopId = window.setTimeout(() => {
+          if (earlyAlertOpenRef.current) return
           window.clearInterval(countdownId)
           if (recorder?.state !== "inactive") recorder.stop()
           disposeAudio()
@@ -378,6 +550,7 @@ function Analyzing() {
     return () => {
       cancelled = true
       window.clearInterval(countdownId)
+      window.clearInterval(uploadStreamIntervalId)
       window.clearTimeout(stopId)
       window.clearTimeout(finishId)
       if (recorder?.state === "recording") recorder.stop()
@@ -395,8 +568,8 @@ function Analyzing() {
         <Navbar />
         <motion.section initial={reduceMotion ? false : { opacity: 0, y: 10 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.45 }} className="mx-auto grid min-h-[calc(100vh-73px)] w-full max-w-6xl items-center gap-5 px-5 py-10 lg:grid-cols-[1.05fr_0.95fr] sm:px-8">
           <motion.div initial={reduceMotion ? false : { scale: 0.97, opacity: 0 }} animate={reduceMotion ? false : { scale: 1, opacity: 1 }} transition={{ duration: 0.5 }} className="rounded-4xl border border-white/10 bg-white/6 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.24)] backdrop-blur sm:p-8">
-            <div className="flex items-center justify-between text-left"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#83b7ff]">{isRecording ? "Recording voice sample" : "Analysis in progress"}</p><h1 className="mt-2 font-display text-2xl font-semibold">{isRecording ? `Speak naturally — ${secondsLeft}s remaining` : "Reading your voice sample"}</h1></div><span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#3a7eea]/20 text-[#82b5ff]">{isRecording ? <Mic className="h-5 w-5 animate-pulse" /> : <AudioLines className="h-5 w-5" />}</span></div>
-            <div className="orb-stage mt-7"><div className="signal-orb" aria-hidden="true"><span /><span /><span /></div><p className="relative z-10 text-sm font-medium text-[#d7e5ff]">{isRecording ? "Listening to your voice..." : "Extracting voice markers"}</p><p className="relative z-10 mt-1 text-xs text-[#8291aa]">{isRecording ? "Live model updates appear beside your recording" : "Checking your sample for synthetic voice patterns"}</p></div>
+            <div className="flex items-center justify-between text-left"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#83b7ff]">{isRecording ? (mode === "upload" ? "Simulating incoming call" : "Recording voice sample") : "Analysis in progress"}</p><h1 className="mt-2 font-display text-2xl font-semibold">{isRecording ? (mode === "upload" ? `Call active — ${secondsLeft}s remaining` : `Speak naturally — ${secondsLeft}s remaining`) : "Reading voice sample"}</h1></div><span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#3a7eea]/20 text-[#82b5ff]">{isRecording ? <Mic className="h-5 w-5 animate-pulse" /> : <AudioLines className="h-5 w-5" />}</span></div>
+            <div className="orb-stage mt-7"><div className="signal-orb" aria-hidden="true"><span /><span /><span /></div><p className="relative z-10 text-sm font-medium text-[#d7e5ff]">{isRecording ? (mode === "upload" ? "Streaming incoming call audio..." : "Listening to your voice...") : "Extracting voice markers"}</p><p className="relative z-10 mt-1 text-xs text-[#8291aa]">{isRecording ? "Live model updates appear beside your call" : "Checking your sample for synthetic voice patterns"}</p></div>
             <div className="mt-4 rounded-xl border border-white/10 bg-[#091324] px-3 py-3"><WaveformVerdict variant="uncertain" state="analyzing" size="sparkline" /></div>
             {errorMessage && <div className="mt-5 rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">{errorMessage}</div>}
             <div className="mt-5 flex items-center justify-between rounded-xl bg-white/6 px-4 py-3 text-left"><span className="truncate text-sm text-slate-300">{location.state?.source ?? "Voice sample"}</span><span className="ml-4 shrink-0 text-xs font-medium text-[#8bc8ba]">{isRecording ? "recording" : "secured"}</span></div>
@@ -442,6 +615,11 @@ function Analyzing() {
         spoofProbability={earlyAlertData?.spoof_probability ?? 0.85}
         risk={earlyAlertData?.risk ?? "HIGH"}
         elapsedSeconds={earlyAlertData?.elapsed_seconds ?? 4}
+        forensics={earlyAlertData?.forensics}
+        attackType={earlyAlertData?.attack_type}
+        flaggedPhrases={earlyAlertData?.flagged_phrases}
+        transcript={earlyAlertData?.transcript}
+        detectionMode={earlyAlertData?.detection_mode}
         onCutCall={(rel) => handleCutCallRef.current?.(rel)}
         onContinue={(rel) => handleContinueRef.current?.(rel)}
         onDismiss={() => setEarlyAlertOpen(false)}
