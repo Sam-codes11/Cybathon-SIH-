@@ -38,6 +38,8 @@ Every task was implemented strictly within the benchmarked operational boundarie
 All changes have been committed to `main` as independent, revertible commits:
 
 ```text
+* 443f5f8 - feat: Redesign PDF incident report to match website theme with dual-layer telemetry, attack classification, and statutory summary
+* 6dc60d9 - docs: Add comprehensive enterprise hardening and explainability REPORT.md
 * e46c05b - Task 8: Containerize stack and add cloud deployment blueprints (Docker, Render, Vercel, Railway)
 * 111bdb5 - Task 7: Expose OpenAPI docs and Swagger schema metadata
 * d08b76f - Task 6: Add telemetry threat trend line chart and completed calls metrics
@@ -168,6 +170,25 @@ flowchart TD
   - `render.yaml`, `frontend/vercel.json`, and `Backend/Procfile`: Deployment blueprints for Render, Vercel, and Railway.
 - **Control Flag**: Infrastructure layer configuration.
 - **Rollback**: Run `git revert e46c05b`.
+
+### Task 9 — Website-Themed Forensic PDF Incident Report Redesign (`443f5f8`)
+- **What Changed**:
+  - Completely redesigned `frontend/src/utils/generatePdfReport.js` to create a 2-page cyber-defense incident dossier matching the VoiceGuard website theme (`#0f1d3a`, `#38bdf8`, `#4f46e5`, cyber-slate `#f5f8fe`).
+  - **In-Depth Forensic Proof Layers**:
+    - Dual-Layer neural detection card: Acoustic CNN (70%) + Behavioral Prosody Anomaly (30%).
+    - Forensic signal telemetry table: Pitch jitter variance, loudspeaker replay score, prosody score, sub-mid energy ratio, room ambience void.
+    - Content risk & social engineering classification: Attack vector categorization (e.g., `digital_arrest_scam`, `financial_extortion`) and flagged coercion phrases.
+    - STT speech transcript excerpt: Vosk speech-to-text excerpts as physical conversational evidence.
+    - Turn-based conversational slot attribution: Slot A vs Slot B peak risk breakdown.
+    - Telecom / DoT number risk tier badge and Chakshu/FRI integration details.
+  - **Comprehensive Executive Incident Determination**:
+    - Multi-paragraph incident narrative synthesizing acoustic anomalies, social engineering vectors, and policy actions.
+    - Statutory legal citations: **Section 66D IT Act 2000** (Cheating by Personation) & BNS impersonation provisions.
+    - **1930 Golden Hour Emergency Financial Protection Protocol** and links to the National Cyber Crime Portal.
+  - Formatted cleanly across 2 pages without vertical overflows or clipped content.
+  - Updated `Result.jsx` and `CallDetail.jsx` to pass full telemetry into `generatePdfReport`.
+- **Control Flag**: Pure client-side evidentiary export; gracefully falls back to formatted text dossier if PDF export encounters browser restrictions.
+- **Rollback**: Run `git revert 443f5f8`.
 
 ---
 
