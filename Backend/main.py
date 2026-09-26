@@ -47,7 +47,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voiceguard")
 
-app = FastAPI()
+app = FastAPI(
+    title="VoiceGuard Enterprise API",
+    description="Real-time multi-layer AI deepfake voice detection, acoustic forensics, and tele-fraud prevention engine.",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
 
 
 # ---------------------------------------------------------
