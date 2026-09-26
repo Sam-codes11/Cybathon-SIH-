@@ -75,7 +75,7 @@ async def analyze_audio(file: UploadFile = File(...)):
     result["attack_type"] = attack_type
     result["flagged_phrases"] = flagged_phrases
 
-    action_info = get_action(result.get("risk", "LOW"))
+    action_info = get_action(result.get("risk", "LOW"), spoof_score=result.get("spoof_probability"))
     result["action"] = action_info.get("action", "ALLOW")
     result["action_message"] = action_info.get("message", "")
 
