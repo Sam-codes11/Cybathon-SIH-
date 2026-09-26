@@ -8,10 +8,28 @@ class CallSession:
         self.segment_results = []
         self.current_risk = "LOW"
         self.current_action = "ALLOW"
-    def add_segment(self, spoof_probability, risk, detection_mode):
+        # Turn-tracking (turn-boundary attribution, NOT identity diarization)
+        self.turn_index = 0
+        self.silence_streak = 0
+        self.current_speaker_slot = "A"
+
+    def update_turn(self, is_speech: bool, silence_windows_to_flip: int = 2):
+        if is_speech:
+            if self.silence_streak >= silence_windows_to_flip and self.turn_index > 0:
+                self.current_speaker_slot = "B" if self.current_speaker_slot == "A" else "A"
+                self.turn_index += 1
+            elif self.turn_index == 0:
+                self.turn_index = 1
+            self.silence_streak = 0
+        else:
+            self.silence_streak += 1
+        return self.current_speaker_slot, self.turn_index
+
+    def add_segment(self, spoof_probability, risk, detection_mode, speaker_slot="A", turn_id=0):
         self.segment_results.append({
             "timestamp": time.time(), "spoof_probability": spoof_probability,
             "risk": risk, "detection_mode": detection_mode,
+            "speaker_slot": speaker_slot, "turn_id": turn_id,
         })
         self.current_risk = risk
 def get_or_create_session(session_id: str = None) -> CallSession:

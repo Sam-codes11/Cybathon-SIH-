@@ -1,3 +1,4 @@
+import config
 import db, session_manager
 import voiceprint
 import content_risk, transcription
@@ -10,7 +11,8 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query, HTTPException, Depends
+from auth import require_api_key
 from audio_routes import router as audio_router
 
 import io
@@ -32,6 +34,19 @@ from prediction_service import (
     create_spectrogram,
 )
 
+import logging
+from logging.handlers import RotatingFileHandler
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        RotatingFileHandler("voiceguard_audit.log", maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("voiceguard")
+
 app = FastAPI()
 
 
@@ -43,7 +58,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -138,16 +153,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
 
-    # ---------------------------------------------------------
-    # Session tracking (section 1.3/1.5 of the build guide)
-    # Frontend can open the socket as /audio-stream?session_id=<uuid>
-    # to keep one session across reconnects; if it doesn't pass one,
-    # session_manager generates a fresh uuid for this connection, which
-    # is already enough for the "two tabs = two independent sessions" demo.
-    # ---------------------------------------------------------
     incoming_session_id = websocket.query_params.get("session_id")
     session = session_manager.get_or_create_session(incoming_session_id)
     session_id = session.session_id
+    logger.info(f"Session started: {session_id} from client {websocket.client}")
 
     print("\n" + "=" * 65, flush=True)
     print("[MICROPHONE] LIVE STREAM OPENED", flush=True)
@@ -157,15 +166,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
     audio_buffer = bytearray()
 
-    # 16 kHz, mono, 16-bit PCM (2 bytes per sample)
     SAMPLE_RATE = 16000
     BYTES_PER_SAMPLE = 2
 
     WINDOW_SECONDS = 4
     HOP_SECONDS = 2
 
-    WINDOW_BYTES = SAMPLE_RATE * WINDOW_SECONDS * BYTES_PER_SAMPLE  # 128,000 bytes
-    HOP_BYTES = SAMPLE_RATE * HOP_SECONDS * BYTES_PER_SAMPLE        # 64,000 bytes
+    WINDOW_BYTES = SAMPLE_RATE * WINDOW_SECONDS * BYTES_PER_SAMPLE
+    HOP_BYTES = SAMPLE_RATE * HOP_SECONDS * BYTES_PER_SAMPLE
 
     analysis_count = 0
     session_spoof_probs = []
@@ -174,26 +182,94 @@ async def websocket_endpoint(websocket: WebSocket):
     threat_latched = False
     latched_mode = "LIVE_HUMAN"
 
+    # --- Race-condition guard -------------------------------------------
+    # The client can close the socket at any moment (Cut Call button,
+    # recording timer ending, tab closed) -- including mid-way through us
+    # still processing the chunk it just sent. Without this guard, a
+    # send_json() that lands after the client's close reaches us raises a
+    # RuntimeError deep in uvicorn, which used to surface to the user as a
+    # bare "Analysis failed" with no session summary ever saved.
+    client_gone = False
+    session_finalized = False
+
+    async def safe_send(payload: dict) -> bool:
+        nonlocal client_gone
+        if client_gone:
+            return False
+        try:
+            await websocket.send_json(payload)
+            return True
+        except (RuntimeError, WebSocketDisconnect):
+            client_gone = True
+            return False
+
+    async def finalize_session():
+        nonlocal session_finalized
+        if session_finalized:
+            return
+        session_finalized = True
+
+        if audio_buffer:
+            try:
+                raw_np = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+                save_path = Path(__file__).resolve().parent.parent / "last_live_mic.wav"
+                sf.write(str(save_path), raw_np, SAMPLE_RATE)
+                print(f"\n[DEBUG] Saved live microphone audio to {save_path.name} ({len(raw_np)/SAMPLE_RATE:.2f}s)", flush=True)
+            except Exception:
+                pass
+
+        max_spoof = max(session_spoof_probs) if session_spoof_probs else 0.0
+        overall_verdict = (
+            "[ALERT] AI DEEPFAKE DETECTED (HIGH RISK)"
+            if max_spoof >= 0.70
+            else ("[WARN] SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.50 else "[OK] GENUINE VOICE VERIFIED (LOW RISK)")
+        )
+        print("\n" + "=" * 65, flush=True)
+        print("[MICROPHONE] LIVE AUDIO CONNECTION CLOSED", flush=True)
+        print(f"Session ID: {session_id}", flush=True)
+        print(f"Total Windows Evaluated: {analysis_count}", flush=True)
+        print(f"Max Spoof Probability:   {max_spoof*100:.1f}%", flush=True)
+        print(f"Session Verdict:         {overall_verdict}", flush=True)
+        print("=" * 65 + "\n", flush=True)
+
+        try:
+            import time
+            db.save_session_summary(
+                session_id=session_id,
+                started_at=session.created_at,
+                ended_at=time.time(),
+                peak_risk=overall_verdict,
+                peak_spoof_score=max_spoof,
+                segment_count=analysis_count
+            )
+        except Exception as e:
+            print(f"Warning: Failed to save session summary: {e}")
+        logger.info(
+            f"Session ended: {session_id} segments={analysis_count} "
+            f"peak_risk={overall_verdict} peak_spoof={max_spoof:.3f}"
+        )
+        session_manager.end_session(session_id)
+
     try:
         while True:
+            if client_gone:
+                break
             data = await websocket.receive_bytes()
             audio_buffer.extend(data)
 
-            # Early Feedback: evaluate first 2s immediately if user just started speaking
             if analysis_count == 0 and len(audio_buffer) >= HOP_BYTES and len(audio_buffer) < WINDOW_BYTES:
                 chunk_bytes = bytes(audio_buffer[:HOP_BYTES])
                 sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown, spectrogram_list = process_pcm_window(chunk_bytes)
                 session_spoof_probs.append(sp)
                 analysis_count += 1
 
-                # Update stateful threat latch
-                if sp >= 0.65 or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
+                if sp >= config.THREAT_LATCH_THRESHOLD or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
                     threat_latched = True
                     latched_mode = mode if mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
                     session_max_spoof = max(session_max_spoof, sp)
 
                 if threat_latched:
-                    effective_sp = max(session_max_spoof, sp, 0.76)
+                    effective_sp = max(session_max_spoof, sp, config.LATCHED_FLOOR)
                     effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
                     effective_risk = "HIGH"
                     effective_status = "high_risk"
@@ -211,10 +287,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         effective_sp = sp
 
                     effective_mode = "LIVE_HUMAN"
-                    effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
-                    effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
-                    effective_label = "spoof" if effective_sp >= 0.50 else "real"
-                    badge = "[WARN]  SUSPICIOUS" if effective_sp >= 0.50 else "[OK]    BONAFIDE"
+                    effective_risk = "HIGH" if effective_sp >= config.HIGH_RISK_THRESHOLD else ("MEDIUM" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "LOW")
+                    effective_status = "high_risk" if effective_sp >= config.HIGH_RISK_THRESHOLD else ("suspicious" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "likely_real")
+                    effective_label = "spoof" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "real"
+                    badge = "[WARN]  SUSPICIOUS" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "[OK]    BONAFIDE"
 
                 speech_tag = "SPEECH" if is_speech else "SILENCE"
                 rep_sc = forensics.get("replay_score", 0)
@@ -226,7 +302,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     flush=True
                 )
 
-                # Speech transcription & content-risk analysis (section 3.4)
                 try:
                     transcript = transcription.transcribe_pcm16(chunk_bytes, sample_rate=16000)
                     if transcript:
@@ -239,18 +314,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     effective_risk = "MEDIUM"
                     effective_status = "suspicious"
 
-                # Session + risk-action wiring (section 1.3/1.4/1.5/3.4)
-                session.add_segment(effective_sp, effective_risk, effective_mode)
+                speaker_slot, turn_id = session.update_turn(is_speech)
+                session.add_segment(effective_sp, effective_risk, effective_mode, speaker_slot, turn_id)
                 action_info = process_and_log(
                     session_id, effective_sp, effective_risk, effective_mode,
-                    transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type
+                    transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type,
+                    speaker_slot=speaker_slot, turn_id=turn_id
                 )
+                if effective_risk in ("HIGH", "MEDIUM"):
+                    logger.warning(
+                        f"Session {session_id} turn {turn_id} slot {speaker_slot}: "
+                        f"RISK={effective_risk} action={action_info['action']} spoof={effective_sp:.3f} attack={attack_type}"
+                    )
 
                 is_early_4s = True
-                impersonation_candidate = bool(effective_sp >= 0.50 or attack_type is not None)
-                await websocket.send_json({
+                impersonation_candidate = bool(effective_sp >= config.MEDIUM_RISK_THRESHOLD or attack_type is not None)
+                sent_ok = await safe_send({
                     "type": "prediction",
                     "session_id": session_id,
+                    "speaker_slot": speaker_slot,
+                    "turn_id": turn_id,
                     "spoof_probability": round(effective_sp, 4),
                     "spectral_score": round(spec_sc, 4),
                     "prosody_score": round(pros_sc, 4),
@@ -280,8 +363,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "chakshu": "https://sancharsaathi.gov.in/sfc/"
                     }
                 })
+                if not sent_ok:
+                    break
 
-            # Full sliding 4-second windows with 2-second hops
             while len(audio_buffer) >= WINDOW_BYTES:
                 window_bytes = bytes(audio_buffer[:WINDOW_BYTES])
                 del audio_buffer[:HOP_BYTES]
@@ -291,22 +375,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 analysis_count += 1
                 elapsed = analysis_count * HOP_SECONDS
 
-                # Update stateful threat latch
-                if sp >= 0.65 or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
+                if sp >= config.THREAT_LATCH_THRESHOLD or mode == "PHONE_REPLAY_AI" or mode == "DIRECT_AI":
                     threat_latched = True
                     latched_mode = mode if mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
                     session_max_spoof = max(session_max_spoof, sp)
 
                 if threat_latched:
-                    # Attack confirmed on this line! Hold alert state rock-solid without flickering.
-                    effective_sp = max(session_max_spoof, sp, 0.76)
+                    effective_sp = max(session_max_spoof, sp, config.LATCHED_FLOOR)
                     effective_mode = latched_mode if latched_mode != "LIVE_HUMAN" else "PHONE_REPLAY_AI"
                     effective_risk = "HIGH"
                     effective_status = "high_risk"
                     effective_label = "spoof"
                     badge = "[ALERT] AI DEEPFAKE (PHONE REPLAY)" if effective_mode == "PHONE_REPLAY_AI" else "[ALERT] AI DEEPFAKE"
                 else:
-                    # Genuine live speech evaluation
                     if is_speech:
                         recent_speech_scores.append(sp)
                         if len(recent_speech_scores) > 3:
@@ -320,10 +401,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         effective_sp = sp
 
                     effective_mode = "LIVE_HUMAN"
-                    effective_risk = "HIGH" if effective_sp >= 0.70 else ("MEDIUM" if effective_sp >= 0.50 else "LOW")
-                    effective_status = "high_risk" if effective_sp >= 0.70 else ("suspicious" if effective_sp >= 0.50 else "likely_real")
-                    effective_label = "spoof" if effective_sp >= 0.50 else "real"
-                    badge = "[WARN]  SUSPICIOUS" if effective_sp >= 0.50 else "[OK]    BONAFIDE"
+                    effective_risk = "HIGH" if effective_sp >= config.HIGH_RISK_THRESHOLD else ("MEDIUM" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "LOW")
+                    effective_status = "high_risk" if effective_sp >= config.HIGH_RISK_THRESHOLD else ("suspicious" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "likely_real")
+                    effective_label = "spoof" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "real"
+                    badge = "[WARN]  SUSPICIOUS" if effective_sp >= config.MEDIUM_RISK_THRESHOLD else "[OK]    BONAFIDE"
 
                 speech_tag = "SPEECH" if is_speech else "SILENCE"
                 rep_sc = forensics.get("replay_score", 0)
@@ -335,7 +416,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     flush=True
                 )
 
-                # Speech transcription & content-risk analysis (section 3.4)
                 try:
                     transcript = transcription.transcribe_pcm16(window_bytes, sample_rate=16000)
                     if transcript:
@@ -348,18 +428,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     effective_risk = "MEDIUM"
                     effective_status = "suspicious"
 
-                # Session + risk-action wiring (section 1.3/1.4/1.5/3.4)
-                session.add_segment(effective_sp, effective_risk, effective_mode)
+                speaker_slot, turn_id = session.update_turn(is_speech)
+                session.add_segment(effective_sp, effective_risk, effective_mode, speaker_slot, turn_id)
                 action_info = process_and_log(
                     session_id, effective_sp, effective_risk, effective_mode,
-                    transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type
+                    transcript=transcript, content_risk_flags=flagged_phrases, attack_type=attack_type,
+                    speaker_slot=speaker_slot, turn_id=turn_id
                 )
+                if effective_risk in ("HIGH", "MEDIUM"):
+                    logger.warning(
+                        f"Session {session_id} turn {turn_id} slot {speaker_slot}: "
+                        f"RISK={effective_risk} action={action_info['action']} spoof={effective_sp:.3f} attack={attack_type}"
+                    )
 
                 is_early_4s = elapsed <= 4
-                impersonation_candidate = bool(effective_sp >= 0.50 or attack_type is not None)
-                await websocket.send_json({
+                impersonation_candidate = bool(effective_sp >= config.MEDIUM_RISK_THRESHOLD or attack_type is not None)
+                sent_ok = await safe_send({
                     "type": "prediction",
                     "session_id": session_id,
+                    "speaker_slot": speaker_slot,
+                    "turn_id": turn_id,
                     "spoof_probability": round(effective_sp, 4),
                     "spectral_score": round(spec_sc, 4),
                     "prosody_score": round(pros_sc, 4),
@@ -389,20 +477,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         "chakshu": "https://sancharsaathi.gov.in/sfc/"
                     }
                 })
+                if not sent_ok:
+                    break
+
+            if client_gone:
+                break
 
     except WebSocketDisconnect:
-        # Save last recorded live audio to disk for forensic debugging
-        if audio_buffer:
-            try:
-                from pathlib import Path
-                raw_np = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
-                save_path = Path(__file__).resolve().parent.parent / "last_live_mic.wav"
-                sf.write(str(save_path), raw_np, SAMPLE_RATE)
-                print(f"\n[DEBUG] Saved live microphone audio to {save_path.name} ({len(raw_np)/SAMPLE_RATE:.2f}s)", flush=True)
-            except Exception as e_save:
-                pass
-
-        # Process any remaining speech tail if at least 1 second of audio remains
         if len(audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE:
             sp, bp, risk, status, label, conf, rms, is_speech, mode, forensics, score_breakdown, spectrogram_list = process_pcm_window(bytes(audio_buffer))
             session_spoof_probs.append(sp)
@@ -412,44 +493,40 @@ async def websocket_endpoint(websocket: WebSocket):
                 f"[TAIL] {badge} | Spoof: {sp*100:5.1f}% | Conf: {conf*100:5.1f}% | RMS: {rms:.4f} | Mode: {mode}",
                 flush=True
             )
-
-        max_spoof = max(session_spoof_probs) if session_spoof_probs else 0.0
-        overall_verdict = (
-            "[ALERT] AI DEEPFAKE DETECTED (HIGH RISK)"
-            if max_spoof >= 0.70
-            else ("[WARN] SUSPICIOUS VOICE DETECTED (MEDIUM RISK)" if max_spoof >= 0.50 else "[OK] GENUINE VOICE VERIFIED (LOW RISK)")
-        )
-        print("\n" + "=" * 65, flush=True)
-        print("[MICROPHONE] LIVE AUDIO CONNECTION CLOSED", flush=True)
-        print(f"Session ID: {session_id}", flush=True)
-        print(f"Total Windows Evaluated: {analysis_count}", flush=True)
-        print(f"Max Spoof Probability:   {max_spoof*100:.1f}%", flush=True)
-        print(f"Session Verdict:         {overall_verdict}", flush=True)
-        print("=" * 65 + "\n", flush=True)
-
-        # Free the in-memory session now that the call has ended
-        session_manager.end_session(session_id)
+        await finalize_session()
 
     except Exception as e:
         print(f"WebSocket error: {repr(e)}", flush=True)
+        await finalize_session()
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
+
+    else:
+        # Loop exited via `break` because safe_send detected the client
+        # had already gone away -- same cleanup as a normal disconnect,
+        # just reached through the race-condition path instead.
+        await finalize_session()
 
 
 # ---------------------------------------------------------
 # Dashboard / multi-call visibility endpoints (section 1.5)
 # ---------------------------------------------------------
 
-@app.get("/dashboard/stats")
+@app.get("/dashboard/stats", dependencies=[Depends(require_api_key)])
 def dashboard_stats():
     return db.get_dashboard_stats()
 
 
-@app.get("/sessions/active")
+@app.get("/sessions/active", dependencies=[Depends(require_api_key)])
 def active_sessions():
     return session_manager.list_active_sessions()
+
+
+@app.get("/sessions/history", dependencies=[Depends(require_api_key)])
+async def get_session_history_endpoint(limit: int = 20):
+    return {"history": db.get_session_history(limit=limit)}
 
 
 # ---------------------------------------------------------
@@ -502,7 +579,7 @@ async def load_audio_waveform(file: UploadFile) -> torch.Tensor:
                     pass
 
 
-@app.post("/enroll")
+@app.post("/enroll", dependencies=[Depends(require_api_key)])
 async def enroll(
     audio: UploadFile = File(...),
     speaker_id: Optional[str] = Form(None),
@@ -519,7 +596,7 @@ async def enroll(
         raise HTTPException(status_code=400, detail=f"Enrollment failed: {str(e)}")
 
 
-@app.post("/verify")
+@app.post("/verify", dependencies=[Depends(require_api_key)])
 async def verify(
     audio: UploadFile = File(...),
     speaker_id: Optional[str] = Form(None),
@@ -541,7 +618,7 @@ async def verify(
         raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
 
 
-@app.get("/voiceprints")
+@app.get("/voiceprints", dependencies=[Depends(require_api_key)])
 def list_voiceprints():
     prints = db.get_all_voiceprints()
     return list(prints.keys())
@@ -551,7 +628,7 @@ def list_voiceprints():
 # Phase 2: Analytics summary endpoint (section 2.4 / 3.4)
 # ---------------------------------------------------------
 
-@app.get("/analytics/summary")
+@app.get("/analytics/summary", dependencies=[Depends(require_api_key)])
 def analytics_summary():
     return db.get_analytics_summary()
 

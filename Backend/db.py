@@ -19,9 +19,16 @@ def init_db():
             detection_mode TEXT,
             transcript TEXT,
             content_risk_flags TEXT,
-            attack_type TEXT
+            attack_type TEXT,
+            speaker_slot TEXT,
+            turn_id INTEGER
         )
     """)
+    for col, coltype in (("speaker_slot", "TEXT"), ("turn_id", "INTEGER")):
+        try:
+            c.execute(f"ALTER TABLE calls ADD COLUMN {col} {coltype}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     c.execute("""
         CREATE TABLE IF NOT EXISTS voiceprints (
             speaker_id TEXT PRIMARY KEY,
@@ -29,8 +36,21 @@ def init_db():
             enrolled_at REAL NOT NULL
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS session_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE,
+            started_at REAL,
+            ended_at REAL,
+            peak_risk TEXT,
+            peak_spoof_score REAL,
+            segment_count INTEGER
+        )
+    """)
     conn.commit()
     conn.close()
+def get_db_connection():
+    return sqlite3.connect(DB_PATH)
 @contextmanager
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -39,15 +59,17 @@ def get_conn():
     finally:
         conn.close()
 def log_call_full(session_id, spoof_score, risk_level, action, detection_mode,
-                   transcript=None, content_risk_flags=None, attack_type=None):
+                   transcript=None, content_risk_flags=None, attack_type=None,
+                   speaker_slot=None, turn_id=None):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO calls
                (session_id, timestamp, spoof_score, risk_level, action, detection_mode,
-                transcript, content_risk_flags, attack_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                transcript, content_risk_flags, attack_type, speaker_slot, turn_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (session_id, time.time(), spoof_score, risk_level, action, detection_mode,
-             transcript, json.dumps(content_risk_flags or []), attack_type)
+             transcript, json.dumps(content_risk_flags or []), attack_type,
+             speaker_slot, turn_id)
         )
         conn.commit()
 def count_recent_risky(session_id, window_seconds=600, min_risk=("MEDIUM", "HIGH")):
@@ -102,3 +124,40 @@ def get_all_voiceprints():
     with get_conn() as conn:
         cur = conn.execute("SELECT speaker_id, embedding FROM voiceprints")
         return {row[0]: json.loads(row[1]) for row in cur.fetchall()}
+
+
+def save_session_summary(session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO session_history
+        (session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count))
+    conn.commit()
+    conn.close()
+
+
+def get_session_history(limit=20):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count
+        FROM session_history
+        ORDER BY ended_at DESC
+        LIMIT ?
+    ''', (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "session_id": r[0],
+            "started_at": r[1],
+            "ended_at": r[2],
+            "duration_sec": round(r[2] - r[1], 1) if (r[1] and r[2]) else 0,
+            "peak_risk": r[3],
+            "peak_spoof_score": r[4],
+            "segment_count": r[5]
+        }
+        for r in rows
+    ]

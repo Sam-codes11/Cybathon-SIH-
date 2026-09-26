@@ -19,6 +19,7 @@ function Dashboard() {
   const [activeSessions, setActiveSessions] = useState([])
   const [liveStats, setLiveStats] = useState(null)
   const [liveError, setLiveError] = useState(false)
+  const [sessionHistory, setSessionHistory] = useState([])
 
   // Poll the backend for active call sessions and dashboard stats.
   // Open two browser tabs and run different audio in each to see two
@@ -29,15 +30,19 @@ function Dashboard() {
 
     const poll = async () => {
       try {
-        const [sessionsRes, statsRes] = await Promise.all([
-          fetch(`${base}/sessions/active`),
-          fetch(`${base}/dashboard/stats`),
+        const headers = { "X-API-Key": "your-internal-api-key-change-in-prod" }
+        const [sessionsRes, statsRes, historyRes] = await Promise.all([
+          fetch(`${base}/sessions/active`, { headers }),
+          fetch(`${base}/dashboard/stats`, { headers }),
+          fetch(`${base}/sessions/history`, { headers }),
         ])
         const sessions = await sessionsRes.json()
         const stats = await statsRes.json()
+        const historyData = await historyRes.json()
         if (!cancelled) {
           setActiveSessions(Array.isArray(sessions) ? sessions : [])
           setLiveStats(stats)
+          setSessionHistory(historyData.history || [])
           setLiveError(false)
         }
       } catch (err) {
@@ -101,6 +106,43 @@ function Dashboard() {
         </div>
       )}
     </motion.div>
+
+    <div style={{ marginTop: 24 }} className="rounded-[1.5rem] border border-[#d7ddea] bg-white/90 p-6 shadow-[0_16px_40px_rgba(34,52,81,0.07)]">
+      <h3 className="font-display text-lg font-semibold text-[#24324b]" style={{ marginBottom: 12 }}>Recently Completed Calls</h3>
+      {sessionHistory.length === 0 ? (
+        <p style={{ color: "#9ca3af" }}>No completed calls recorded yet.</p>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #374151", color: "#9ca3af", textAlign: "left" }}>
+              <th style={{ padding: "8px 4px" }}>Session</th>
+              <th style={{ padding: "8px 4px" }}>Duration</th>
+              <th style={{ padding: "8px 4px" }}>Segments</th>
+              <th style={{ padding: "8px 4px" }}>Peak Spoof</th>
+              <th style={{ padding: "8px 4px" }}>Peak Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sessionHistory.map(h => (
+              <tr key={h.session_id} style={{ borderBottom: "1px solid #1f2937" }}>
+                <td style={{ padding: "8px 4px", fontFamily: "monospace" }}>{h.session_id.slice(0, 8)}...</td>
+                <td style={{ padding: "8px 4px" }}>{h.duration_sec}s</td>
+                <td style={{ padding: "8px 4px" }}>{h.segment_count}</td>
+                <td style={{ padding: "8px 4px" }}>{(h.peak_spoof_score * 100).toFixed(1)}%</td>
+                <td style={{ padding: "8px 4px" }}>
+                  <span style={{
+                    color: (h.peak_risk === "HIGH" || (typeof h.peak_risk === "string" && h.peak_risk.includes("HIGH"))) ? "#ef4444" : (h.peak_risk === "MEDIUM" || (typeof h.peak_risk === "string" && h.peak_risk.includes("MEDIUM"))) ? "#f59e0b" : "#10b981",
+                    fontWeight: 600
+                  }}>
+                    {h.peak_risk}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
 
     <motion.div initial={reduceMotion ? false : { opacity: 0, y: 16 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: reduceMotion ? 0 : 0.28 }} className="mt-7 overflow-hidden rounded-[1.5rem] border border-[#d7ddea] bg-white/90 shadow-[0_16px_40px_rgba(34,52,81,0.07)]"><div className="flex items-center justify-between border-b border-[#e6eaf0] px-5 py-5 sm:px-6"><div><h2 className="font-display text-lg font-semibold text-[#24324b]">Recent checks</h2><p className="mt-1 text-xs text-[#718097]">Real-time calls from database and live sessions.</p></div><AudioLines className="h-5 w-5 text-[#5c8ee0]" /></div><div className="divide-y divide-[#e9edf3]">{displayChecks.map(([caller, classification, risk, score, time], index) => <motion.div key={caller + index} whileHover={reduceMotion ? {} : { backgroundColor: "rgba(241, 246, 255, 0.9)" }} className="flex flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6"><div className="flex items-center gap-3"><span className={`grid h-10 w-10 place-items-center rounded-xl ${risk === "High" ? "bg-[#fff0ea] text-[#c85b49]" : "bg-[#edf4ff] text-[#4a7ed3]"}`}>{risk === "High" ? <ShieldAlert className="h-5 w-5" /> : <AudioLines className="h-5 w-5" />}</span><div><p className="text-sm font-semibold text-[#2f3d57]">{caller}</p><p className="mt-1 text-xs text-[#758197]">{classification} · {time}</p></div></div><div className="flex items-center justify-between gap-4 sm:justify-end"><span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${risk === "High" ? "bg-[#fff0ea] text-[#c75d49]" : risk === "Low" ? "bg-[#eaf8f4] text-[#23816e]" : "bg-[#fff6e8] text-[#b97928]"}`}>{risk} · {score}</span><Link to={`/call/${index + 1}`} className="inline-flex items-center gap-1 text-xs font-semibold text-[#4e79bd] transition hover:text-[#1f4e96]">View <ArrowUpRight className="h-3.5 w-3.5" /></Link></div></motion.div>)}</div></motion.div>
     <motion.div initial={reduceMotion ? false : { opacity: 0 }} animate={reduceMotion ? false : { opacity: 1 }} transition={{ delay: reduceMotion ? 0 : 0.42 }}><EmptyState className="mt-8 bg-white/70" title="More call history will appear here" description="Connect the analysis backend to replace this demonstration activity with live results." /></motion.div>

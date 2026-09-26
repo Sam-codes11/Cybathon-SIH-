@@ -1006,6 +1006,13 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                 The actual log-magnitude STFT spectrogram fed into the SpoofCNN feature extractor, revealing harmonic pitch tracks and vocoder artifacts.
               </p>
 
+              {backendData?.speaker_slot && (
+                <p className="mt-2 text-xs text-[#718097]">
+                  Turn {backendData.turn_id} · Speaker slot {backendData.speaker_slot}
+                  <span className="ml-1 text-[10px] italic">(turn-based, not identity-verified diarization)</span>
+                </p>
+              )}
+
               <div className="mt-5">
                 <div className="mb-1.5 flex justify-between text-[11px] font-mono text-slate-400">
                   <span>0.0s (Time)</span>

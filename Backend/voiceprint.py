@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import config
 from prediction_service import model, create_spectrogram, DEVICE
 import db
 @torch.no_grad()
@@ -33,7 +34,9 @@ def enroll_speaker(speaker_id: str, waveform: torch.Tensor):
     return embedding
 
 
-def verify_speaker(waveform: torch.Tensor, claimed_speaker_id: str, threshold: float = 0.75):
+def verify_speaker(waveform: torch.Tensor, claimed_speaker_id: str, threshold: float = None):
+    if threshold is None:
+        threshold = config.VOICEPRINT_MATCH_THRESHOLD
     voiceprints = db.get_all_voiceprints()
     if claimed_speaker_id not in voiceprints:
         return False, 0.0, "NOT_ENROLLED"
