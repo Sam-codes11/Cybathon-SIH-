@@ -285,13 +285,13 @@ def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
 
         # Human pitch range: 80 Hz to 450 Hz (35 to 200 samples at 16kHz)
         min_lag = int(sr / 450)
-        max_lag = int(sr / 80)
+        max_lag = int(sr / 65)
         if max_lag < len(r_norm):
             lag_window = r_norm[min_lag:max_lag]
             peak_lag = min_lag + int(np.argmax(lag_window))
             peak_val = r_norm[peak_lag]
 
-            if peak_val >= 0.40:
+            if peak_val >= 0.32:
                 voiced_periods.append(peak_lag)
                 spec = np.abs(np.fft.rfft(frame_win)) ** 2
                 voiced_sub_energies.append(float(np.sum(spec[idx_sub])))
@@ -328,7 +328,7 @@ def extract_acoustic_forensics(waveform: torch.Tensor, sr: int = 16000) -> dict:
         sub_mid_ratio = float(p_sub / (p_mid + 1e-6))
         sub_fraction = float(p_sub / (p_core + p_sub + 1e-6))
         high_mid_ratio = float(p_high / (p_mid + 1e-6))
-        jitter = 0.015
+        jitter = 0.055
 
     # 1. Physical Loudspeaker Transducer Replay Score (S_replay)
     # Smartphone speakers physically cannot reproduce < 220Hz (steep -18dB/octave highpass).

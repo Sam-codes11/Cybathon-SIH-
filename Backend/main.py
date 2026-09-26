@@ -1,3 +1,6 @@
+import db, session_manager
+from risk_engine import process_and_log
+db.init_db()  # run once at startup, e.g. right after "app = FastAPI()"
 import sys
 if hasattr(sys.stdout, "reconfigure"):
     try:
