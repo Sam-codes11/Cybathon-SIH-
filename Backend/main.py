@@ -1,4 +1,5 @@
 import db, session_manager
+import voiceprint
 from risk_engine import process_and_log
 db.init_db()  # run once at startup, e.g. right after "app = FastAPI()"
 import sys
@@ -8,14 +9,19 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query, HTTPException
 from audio_routes import router as audio_router
 
 import io
+import os
+import tempfile
+from pathlib import Path
+from typing import Optional
 import numpy as np
 import soundfile as sf
 import torch
 import torch.nn.functional as F
+from pydub import AudioSegment
 
 from prediction_service import (
     predict_audio,
@@ -377,6 +383,110 @@ def dashboard_stats():
 @app.get("/sessions/active")
 def active_sessions():
     return session_manager.list_active_sessions()
+
+
+# ---------------------------------------------------------
+# Phase 2: Speaker Voiceprint / Trust Layer (section 2.1)
+# ---------------------------------------------------------
+
+async def load_audio_waveform(file: UploadFile) -> torch.Tensor:
+    """
+    Reads an uploaded audio file (WAV, WebM, MP3, etc.), normalizes it to
+    16kHz mono PCM float32, and returns a 1D PyTorch tensor.
+    """
+    content = await file.read()
+    if not content:
+        raise ValueError("Uploaded audio file is empty")
+
+    suffix = Path(file.filename or "recording.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_in:
+        temp_in.write(content)
+        temp_in_path = temp_in.name
+
+    temp_wav_path = temp_in_path + ".converted.wav"
+    try:
+        # First attempt: if it's already a 16kHz mono WAV, sf.read handles it fastest
+        try:
+            data, sr = sf.read(temp_in_path, dtype="float32")
+            if sr == 16000:
+                wf = torch.tensor(data, dtype=torch.float32)
+                if wf.ndim > 1:
+                    wf = wf.mean(dim=-1)
+                return wf
+        except Exception:
+            pass
+
+        # Robust fallback: use pydub to convert any audio container to 16kHz mono
+        seg = AudioSegment.from_file(temp_in_path)
+        seg = seg.set_frame_rate(16000).set_channels(1)
+        seg.export(temp_wav_path, format="wav")
+
+        audio_data, _ = sf.read(temp_wav_path, dtype="float32")
+        wf = torch.tensor(audio_data, dtype=torch.float32)
+        if wf.ndim > 1:
+            wf = wf.mean(dim=-1)
+        return wf
+    finally:
+        for p in (temp_in_path, temp_wav_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+@app.post("/enroll")
+async def enroll(
+    audio: UploadFile = File(...),
+    speaker_id: Optional[str] = Form(None),
+    speaker_id_query: Optional[str] = Query(None, alias="speaker_id"),
+):
+    target_speaker = speaker_id or speaker_id_query
+    if not target_speaker:
+        raise HTTPException(status_code=400, detail="speaker_id is required")
+    try:
+        waveform = await load_audio_waveform(audio)
+        voiceprint.enroll_speaker(target_speaker, waveform)
+        return {"status": "enrolled", "speaker_id": target_speaker}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Enrollment failed: {str(e)}")
+
+
+@app.post("/verify")
+async def verify(
+    audio: UploadFile = File(...),
+    speaker_id: Optional[str] = Form(None),
+    speaker_id_query: Optional[str] = Query(None, alias="speaker_id"),
+):
+    target_speaker = speaker_id or speaker_id_query
+    if not target_speaker:
+        raise HTTPException(status_code=400, detail="speaker_id is required")
+    try:
+        waveform = await load_audio_waveform(audio)
+        is_match, similarity, status = voiceprint.verify_speaker(waveform, target_speaker)
+        return {
+            "is_match": bool(is_match),
+            "similarity": round(float(similarity), 4),
+            "status": status,
+            "speaker_id": target_speaker,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
+
+
+@app.get("/voiceprints")
+def list_voiceprints():
+    prints = db.get_all_voiceprints()
+    return list(prints.keys())
+
+
+# ---------------------------------------------------------
+# Phase 2: Analytics summary endpoint (section 2.4 / 3.4)
+# ---------------------------------------------------------
+
+@app.get("/analytics/summary")
+def analytics_summary():
+    return db.get_analytics_summary()
 
 
 # ---------------------------------------------------------

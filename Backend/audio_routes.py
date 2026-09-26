@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File
 from prediction_service import predict_audio
+from risk_engine import get_action
 from pydub import AudioSegment
 import tempfile
 import os
@@ -40,6 +41,10 @@ async def analyze_audio(file: UploadFile = File(...)):
         f"Risk: {result.get('risk')} | Result: {result.get('result')} | Mode: {result.get('threat_classification', {}).get('predicted_attack_vector')}",
         flush=True
     )
+
+    action_info = get_action(result.get("risk", "LOW"))
+    result["action"] = action_info.get("action", "ALLOW")
+    result["action_message"] = action_info.get("message", "")
 
     os.remove(webm_path)
     os.remove(wav_path)

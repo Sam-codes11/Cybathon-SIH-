@@ -1275,6 +1275,20 @@ def predict_audio(file):
             risk = "LOW"
 
 
+        # Extract STFT Spectrogram and forensic biometrics for the primary/most-suspicious window
+        best_win_idx = 0
+        if segment_results:
+            best_win_idx = max(
+                range(len(segment_results)),
+                key=lambda i: segment_results[i].get("final_score", segment_results[i].get("spoof_probability", 0))
+            )
+        target_win = windows[best_win_idx]["waveform"] if windows else waveform
+        with torch.no_grad():
+            primary_spec_tensor = create_spectrogram(target_win)
+        primary_spectrogram = primary_spec_tensor.squeeze().detach().cpu().numpy().tolist()
+        primary_forensics = segment_results[best_win_idx].get("forensics", {}) if segment_results else {}
+        primary_detection_mode = segment_results[best_win_idx].get("detection_mode", "LIVE_HUMAN") if segment_results else "LIVE_HUMAN"
+
         # ====================================================
         # FINAL RESPONSE
         # ====================================================
@@ -1282,6 +1296,12 @@ def predict_audio(file):
         return {
 
             "filename": file.filename,
+
+            "spectrogram": primary_spectrogram,
+
+            "forensics": primary_forensics,
+
+            "detection_mode": primary_detection_mode,
 
             "result": prediction,
 

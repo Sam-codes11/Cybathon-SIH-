@@ -201,6 +201,7 @@ function Analyzing() {
         const suspiciousCount = targetReports.filter((r) => r.spoof_probability >= 0.50).length
         const primaryMode = targetReports.find((r) => r.detection_mode === "PHONE_REPLAY_AI")?.detection_mode || (isSpoof ? "DIRECT_AI" : "LIVE_HUMAN")
 
+        const lastReport = targetReports[targetReports.length - 1] || latestReportRef.current || {}
         const aggregatedResult = {
           result: isSpoof ? "spoof" : "real",
           status: isSpoof ? (overallScore >= 0.70 ? "high_risk" : "suspicious") : "likely_real",
@@ -215,6 +216,11 @@ function Analyzing() {
           callerRelationship: callerRelationshipRef.current,
           isImpersonationAttack: callerRelationshipRef.current === "yes",
           early_4s_flagged: earlyAlertTriggeredRef.current,
+          spectrogram: lastReport.spectrogram,
+          forensics: lastReport.forensics,
+          action: lastReport.action,
+          action_message: lastReport.action_message,
+          repeated_suspicious: lastReport.repeated_suspicious,
           segments: allReports.map((r, i) => ({
             segment: i + 1,
             start_time: Math.max(0, (r.elapsed_seconds ?? (i + 1) * 2) - 4),

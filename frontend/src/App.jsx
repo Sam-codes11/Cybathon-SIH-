@@ -5,6 +5,7 @@ import Result from "./pages/Result"
 import Enrollment from "./pages/Enrollment"
 import Dashboard from "./pages/Dashboard"
 import CallDetail from "./pages/CallDetail"
+import Analytics from "./pages/Analytics"
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
         <Route path="/result" element={<Result />} />
         <Route path="/enroll" element={<Enrollment />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/analytics" element={<Analytics />} />
         <Route path="/call/:id" element={<CallDetail />} />
       </Routes>
     </BrowserRouter>
