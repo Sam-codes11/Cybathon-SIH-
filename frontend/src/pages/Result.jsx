@@ -574,7 +574,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
     try {
       const fileName = generatePdfReport({
         reportId: `VS-INCIDENT-${Date.now().toString().slice(-6)}`,
-        audioSource: backendData?.filename || "Live Call Interception",
+        audioSource: backendData?.filename || "Live Call Audio Interception",
         classification: report.classification,
         riskScore: riskScore,
         confidencePercent: confidencePercent,
@@ -584,6 +584,22 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
         intercepted: intercepted,
         forensicParameters: forensicParameters,
         summary: report.summary,
+        spectralScore: backendData?.spectral_score,
+        prosodyScore: backendData?.prosody_score,
+        finalScore: backendData?.final_score,
+        scoreBreakdown: backendData?.score_breakdown,
+        forensics: backendData?.forensics,
+        attackType: backendData?.attack_type,
+        flaggedPhrases: backendData?.flagged_phrases || [],
+        transcript: backendData?.transcript || "",
+        action: backendData?.action || automatedAction.action,
+        actionMessage: backendData?.action_message || automatedAction.label,
+        perSpeakerScores: backendData?.per_speaker_scores,
+        numberRiskTier: backendData?.number_risk_tier,
+        numberRiskDetails: backendData?.number_risk_details,
+        callerId: backendData?.caller_id || (callerRelationship === "no" ? "Unknown Caller" : "Contact"),
+        detectionMode: backendData?.detection_mode,
+        totalSegments: backendData?.total_segments || backendData?.segments?.length || 1,
       })
       setToastMessage(`Official PDF report generated: ${fileName}`)
       setFlagged(true)

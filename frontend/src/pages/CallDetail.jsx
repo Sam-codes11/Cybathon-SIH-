@@ -51,6 +51,17 @@ Reporting Portal     : cybercrime.gov.in
         isImpersonation: true,
         callerRelationship: "no",
         intercepted: true,
+        spectralScore: 0.89,
+        prosodyScore: 0.82,
+        finalScore: 0.87,
+        attackType: "financial_extortion",
+        flaggedPhrases: ["send money", "emergency fund", "arrest warrant"],
+        transcript: "urgent police case registered against your account transfer five lakh immediately",
+        action: "ESCALATE",
+        actionMessage: "Escalate to telecom regulator (DoT) & cyber helpline 1930 immediately",
+        numberRiskTier: "HIGH",
+        numberRiskDetails: "Known extortion prefix pattern flagged by DoT telemetry",
+        callerId: "+91 98765 43210 (Spoofed)",
       })
       setToastMessage(`Downloaded PDF Report: ${fileName}`)
       setShowToast(true)
