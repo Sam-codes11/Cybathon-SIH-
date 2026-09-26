@@ -249,14 +249,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
         try:
             import time
-            db.save_session_summary(
-                session_id=session_id,
-                started_at=session.created_at,
-                ended_at=time.time(),
-                peak_risk=overall_verdict,
-                peak_spoof_score=max_spoof,
-                segment_count=analysis_count
-            )
+            if config.ENABLE_SESSION_HISTORY:
+                db.save_session_summary(
+                    session_id=session_id,
+                    started_at=session.created_at,
+                    ended_at=time.time(),
+                    peak_risk=overall_verdict,
+                    peak_spoof_score=max_spoof,
+                    segment_count=analysis_count,
+                    number_risk_tier=number_risk_tier
+                )
         except Exception as e:
             print(f"Warning: Failed to save session summary: {e}")
         logger.info(

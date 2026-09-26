@@ -44,9 +44,14 @@ def init_db():
             ended_at REAL,
             peak_risk TEXT,
             peak_spoof_score REAL,
-            segment_count INTEGER
+            segment_count INTEGER,
+            number_risk_tier TEXT
         )
     """)
+    try:
+        c.execute("ALTER TABLE session_history ADD COLUMN number_risk_tier TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.commit()
     conn.close()
 def get_db_connection():
@@ -126,14 +131,14 @@ def get_all_voiceprints():
         return {row[0]: json.loads(row[1]) for row in cur.fetchall()}
 
 
-def save_session_summary(session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count):
+def save_session_summary(session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count, number_risk_tier=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO session_history
-        (session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count))
+        (session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count, number_risk_tier)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count, number_risk_tier))
     conn.commit()
     conn.close()
 
@@ -141,23 +146,51 @@ def save_session_summary(session_id, started_at, ended_at, peak_risk, peak_spoof
 def get_session_history(limit=20):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count
-        FROM session_history
-        ORDER BY ended_at DESC
-        LIMIT ?
-    ''', (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [
-        {
-            "session_id": r[0],
-            "started_at": r[1],
-            "ended_at": r[2],
-            "duration_sec": round(r[2] - r[1], 1) if (r[1] and r[2]) else 0,
-            "peak_risk": r[3],
-            "peak_spoof_score": r[4],
-            "segment_count": r[5]
-        }
-        for r in rows
-    ]
+    cursor.execute("PRAGMA table_info(session_history)")
+    cols = [row[1] for row in cursor.fetchall()]
+    has_num_risk = "number_risk_tier" in cols
+
+    if has_num_risk:
+        cursor.execute('''
+            SELECT session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count, number_risk_tier
+            FROM session_history
+            ORDER BY ended_at DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "session_id": r[0],
+                "started_at": r[1],
+                "ended_at": r[2],
+                "duration_sec": round(r[2] - r[1], 1) if (r[1] and r[2]) else 0,
+                "peak_risk": r[3],
+                "peak_spoof_score": r[4],
+                "segment_count": r[5],
+                "number_risk_tier": r[6]
+            }
+            for r in rows
+        ]
+    else:
+        cursor.execute('''
+            SELECT session_id, started_at, ended_at, peak_risk, peak_spoof_score, segment_count
+            FROM session_history
+            ORDER BY ended_at DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "session_id": r[0],
+                "started_at": r[1],
+                "ended_at": r[2],
+                "duration_sec": round(r[2] - r[1], 1) if (r[1] and r[2]) else 0,
+                "peak_risk": r[3],
+                "peak_spoof_score": r[4],
+                "segment_count": r[5],
+                "number_risk_tier": None
+            }
+            for r in rows
+        ]

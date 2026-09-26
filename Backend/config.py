@@ -20,6 +20,7 @@ ESCALATE_THRESHOLD = _float_env("VG_ESCALATE_THRESHOLD", 0.85)
 ENABLE_ACTION_ESCALATE = os.environ.get("VG_ENABLE_ACTION_ESCALATE", "1").lower() in ("1", "true", "yes")
 ENABLE_PER_SPEAKER_SCORES = os.environ.get("VG_ENABLE_PER_SPEAKER_SCORES", "1").lower() in ("1", "true", "yes")
 ENABLE_NUMBER_RISK = os.environ.get("VG_ENABLE_NUMBER_RISK", "1").lower() in ("1", "true", "yes")
+ENABLE_SESSION_HISTORY = os.environ.get("VG_ENABLE_SESSION_HISTORY", "1").lower() in ("1", "true", "yes")
 
 # Shared-secret for sensitive endpoints. Unset = auth skipped (local dev only).
 API_KEY = os.environ.get("VG_API_KEY")

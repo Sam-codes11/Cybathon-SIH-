@@ -105,7 +105,7 @@ async def analyze_audio(file: UploadFile = File(...), caller_id: Optional[str] =
 
     # Log to local DB (Phase 1 & Phase 3)
     try:
-        import db, uuid
+        import db, uuid, time
         session_id = str(uuid.uuid4())
         db.log_call_full(
             session_id,
@@ -118,8 +118,20 @@ async def analyze_audio(file: UploadFile = File(...), caller_id: Optional[str] =
             attack_type=attack_type,
             number_risk_tier=number_risk_tier
         )
+        result["repeated_suspicious"] = bool(db.count_recent_risky(session_id) >= 2)
+        if config.ENABLE_SESSION_HISTORY:
+            db.save_session_summary(
+                session_id=session_id,
+                started_at=time.time(),
+                ended_at=time.time(),
+                peak_risk=result.get("risk", "LOW"),
+                peak_spoof_score=result.get("spoof_probability", 0.0),
+                segment_count=1,
+                number_risk_tier=number_risk_tier
+            )
     except Exception as e_db:
         print(f"[UPLOAD DB ERROR] {e_db}", flush=True)
+        result["repeated_suspicious"] = False
 
     os.remove(webm_path)
     os.remove(wav_path)
