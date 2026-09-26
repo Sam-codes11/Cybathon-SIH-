@@ -96,7 +96,26 @@ def get_dashboard_stats():
             "SELECT session_id, timestamp, risk_level, action FROM calls "
             "ORDER BY timestamp DESC LIMIT 20"
         ).fetchall()
-        return {"total_calls": total, "high_risk_calls": high_risk, "recent": recent}
+        trend_rows = conn.execute(
+            "SELECT id, timestamp, spoof_score, risk_level, action FROM calls "
+            "ORDER BY timestamp ASC LIMIT 30"
+        ).fetchall()
+        trend = [
+            {
+                "id": r[0],
+                "timestamp": r[1],
+                "spoof_score": round(float(r[2] or 0.0), 3),
+                "risk_level": r[3],
+                "action": r[4]
+            }
+            for r in trend_rows
+        ]
+        return {
+            "total_calls": total,
+            "high_risk_calls": high_risk,
+            "recent": recent,
+            "trend": trend
+        }
 def get_analytics_summary():
     with get_conn() as conn:
         total = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]

@@ -14,6 +14,158 @@ const getApiBase = () => {
   return `http://${host}:8000`
 }
 
+function TrendLineChart({ trend, history }) {
+  const points = (trend && trend.length >= 2)
+    ? trend.map(t => ({
+        score: t.spoof_score,
+        risk: t.risk_level,
+        label: new Date(t.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }))
+    : (history && history.length >= 2)
+    ? history.slice().reverse().map(h => ({
+        score: h.peak_spoof_score || 0,
+        risk: h.peak_risk,
+        label: `${h.session_id.slice(0, 6)}...`
+      }))
+    : [
+        { score: 0.12, risk: "LOW", label: "10:00" },
+        { score: 0.18, risk: "LOW", label: "10:15" },
+        { score: 0.54, risk: "MEDIUM", label: "10:30" },
+        { score: 0.22, risk: "LOW", label: "10:45" },
+        { score: 0.88, risk: "HIGH", label: "11:00" },
+        { score: 0.15, risk: "LOW", label: "11:15" },
+      ]
+
+  const width = 600
+  const height = 150
+  const padX = 45
+  const padY = 20
+  const chartW = width - padX * 2
+  const chartH = height - padY * 2
+
+  const n = points.length
+  const stepX = chartW / Math.max(1, n - 1)
+
+  const coords = points.map((p, i) => {
+    const x = padX + i * stepX
+    const y = padY + chartH - (Math.min(Math.max(p.score, 0), 1) * chartH)
+    return { x, y, ...p }
+  })
+
+  const pathD = coords.reduce((acc, pt, i) => {
+    return i === 0 ? `M ${pt.x},${pt.y}` : `${acc} L ${pt.x},${pt.y}`
+  }, "")
+
+  const areaD = coords.length ? `${pathD} L ${coords[coords.length - 1].x},${padY + chartH} L ${coords[0].x},${padY + chartH} Z` : ""
+
+  const avgScore = points.reduce((acc, p) => acc + p.score, 0) / points.length
+  const peakScore = Math.max(...points.map(p => p.score))
+
+  return (
+    <div className="mt-7 overflow-hidden rounded-[1.5rem] border border-[#d7ddea] bg-white/90 p-5 shadow-[0_16px_40px_rgba(34,52,81,0.07)] sm:p-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-[#e6eaf0] pb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-800">
+              Telemetry Analytics
+            </span>
+            <span className="text-xs text-[#718097]">
+              {points.length} sequential evaluation points
+            </span>
+          </div>
+          <h2 className="mt-1 font-display text-lg font-semibold text-[#24324b]">
+            Threat Score Trend Line
+          </h2>
+          <p className="text-xs text-[#718097]">
+            Real-time acoustic threat trajectory across calls & evaluation windows.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 self-start sm:self-center">
+          <div className="text-right">
+            <p className="text-[11px] text-[#718097]">Average Threat</p>
+            <p className="font-mono text-sm font-bold text-slate-900">{(avgScore * 100).toFixed(1)}%</p>
+          </div>
+          <div className="h-7 w-px bg-slate-200" />
+          <div className="text-right">
+            <p className="text-[11px] text-[#718097]">Peak Threat</p>
+            <p className="font-mono text-sm font-bold text-red-600">{(peakScore * 100).toFixed(1)}%</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-36 overflow-visible">
+          <defs>
+            <linearGradient id="dashboardTrendGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.30" />
+              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+
+          {/* 70% High risk line */}
+          <line
+            x1={padX}
+            y1={padY + chartH - 0.70 * chartH}
+            x2={width - padX}
+            y2={padY + chartH - 0.70 * chartH}
+            stroke="#ef4444"
+            strokeDasharray="4 4"
+            strokeWidth="1"
+            opacity="0.45"
+          />
+          <text x={padX - 6} y={padY + chartH - 0.70 * chartH + 3} textAnchor="end" fontSize="9" fill="#ef4444">
+            70% High
+          </text>
+
+          {/* 50% Medium risk line */}
+          <line
+            x1={padX}
+            y1={padY + chartH - 0.50 * chartH}
+            x2={width - padX}
+            y2={padY + chartH - 0.50 * chartH}
+            stroke="#f59e0b"
+            strokeDasharray="4 4"
+            strokeWidth="1"
+            opacity="0.45"
+          />
+          <text x={padX - 6} y={padY + chartH - 0.50 * chartH + 3} textAnchor="end" fontSize="9" fill="#f59e0b">
+            50% Med
+          </text>
+
+          {/* Area fill */}
+          {areaD && <path d={areaD} fill="url(#dashboardTrendGradient)" />}
+
+          {/* Trend line */}
+          <path d={pathD} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+
+          {/* Points */}
+          {coords.map((pt, i) => (
+            <circle
+              key={i}
+              cx={pt.x}
+              cy={pt.y}
+              r={pt.score >= 0.70 ? 4 : (pt.score >= 0.50 ? 3.5 : 2.5)}
+              fill={pt.score >= 0.70 ? "#ef4444" : (pt.score >= 0.50 ? "#f59e0b" : "#3b82f6")}
+              stroke="#ffffff"
+              strokeWidth="1.5"
+            />
+          ))}
+        </svg>
+
+        <div className="flex justify-between text-[11px] font-mono text-[#718097] px-6 mt-1">
+          <span>Earliest ({coords[0]?.label || "Start"})</span>
+          <span className="flex items-center gap-4">
+            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-blue-500 inline-block"/> Safe (&lt;50%)</span>
+            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500 inline-block"/> Suspicious</span>
+            <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500 inline-block"/> High Risk (&ge;70%)</span>
+          </span>
+          <span>Latest ({coords[coords.length - 1]?.label || "Now"})</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Dashboard() {
   const reduceMotion = useReducedMotion()
   const [activeSessions, setActiveSessions] = useState([])
@@ -72,6 +224,11 @@ function Dashboard() {
     <motion.div initial={reduceMotion ? false : { opacity: 0, y: 14 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.45 }} className="flex flex-col gap-5 border-b border-[#d4dbe7] pb-8 md:flex-row md:items-end md:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#5876a5]">Prototype workspace</p><h1 className="mt-3 font-display text-3xl font-semibold tracking-[-0.04em] text-ink-900 sm:text-4xl">Call dashboard</h1><p className="mt-3 max-w-xl text-sm leading-6 text-[#647188]">Track recent checks and focus attention on the calls that need a safer follow-up.</p></div><div className="flex items-center gap-3"><Link to="/analytics" className="inline-flex items-center gap-1.5 self-start rounded-full border border-[#cfd9ea] bg-white px-4 py-2 text-xs font-semibold text-[#1e3a8a] shadow-sm transition hover:bg-slate-50">Analytics <ArrowUpRight className="h-3.5 w-3.5" /></Link><div className="inline-flex items-center gap-2 self-start rounded-full border border-[#cfd9ea] bg-white/85 px-4 py-2 text-xs font-medium text-[#506078]"><span className="h-2 w-2 rounded-full bg-[#3f82f1]" />Demo activity</div></div></motion.div>
     <div className="mt-8 grid gap-4 sm:grid-cols-3">{[[liveStats ? String(liveStats.total_calls) : "3", "Checks in this demo"], [liveStats ? String(liveStats.high_risk_calls) : "1", "High risk (all-time)"], [String(activeSessions.length), "Live sessions now"]].map(([value, label], index) => <motion.div key={label} initial={reduceMotion ? false : { opacity: 0, y: 14 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.45, delay: reduceMotion ? 0 : 0.08 + index * 0.08 }} className="rounded-2xl border border-[#d7ddea] bg-white/90 p-5 shadow-[0_10px_30px_rgba(34,52,81,0.05)]"><p className="font-mono text-3xl font-medium tracking-[-0.07em] text-[#20304c]">{value}</p><p className="mt-2 text-sm text-[#718097]">{label}</p></motion.div>)}</div>
 
+    {/* TELEMETRY TREND LINE PANEL */}
+    <motion.div initial={reduceMotion ? false : { opacity: 0, y: 15 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: reduceMotion ? 0 : 0.15 }}>
+      <TrendLineChart trend={liveStats?.trend} history={sessionHistory} />
+    </motion.div>
+
     {/* LIVE ACTIVE CALLS PANEL -- proves independent multi-call session tracking */}
     <motion.div initial={reduceMotion ? false : { opacity: 0, y: 16 }} animate={reduceMotion ? false : { opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: reduceMotion ? 0 : 0.2 }} className="mt-7 overflow-hidden rounded-[1.5rem] border border-[#d7ddea] bg-white/90 shadow-[0_16px_40px_rgba(34,52,81,0.07)]">
       <div className="flex items-center justify-between border-b border-[#e6eaf0] px-5 py-5 sm:px-6">
@@ -120,6 +277,7 @@ function Dashboard() {
               <th style={{ padding: "8px 4px" }}>Segments</th>
               <th style={{ padding: "8px 4px" }}>Peak Spoof</th>
               <th style={{ padding: "8px 4px" }}>Peak Risk</th>
+              <th style={{ padding: "8px 4px" }}>Number Risk</th>
             </tr>
           </thead>
           <tbody>
@@ -135,6 +293,17 @@ function Dashboard() {
                     fontWeight: 600
                   }}>
                     {h.peak_risk}
+                  </span>
+                </td>
+                <td style={{ padding: "8px 4px" }}>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                    h.number_risk_tier === "HIGH"
+                      ? "bg-red-100 text-red-700"
+                      : h.number_risk_tier === "MEDIUM"
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-slate-100 text-slate-600"
+                  }`}>
+                    {h.number_risk_tier || "N/A"}
                   </span>
                 </td>
               </tr>
