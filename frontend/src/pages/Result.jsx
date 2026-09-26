@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
   AlertTriangle,
@@ -33,6 +33,93 @@ import Toast from "../components/Toast"
 import { generatePdfReport } from "../utils/generatePdfReport"
 
 const reveal = { hidden: { opacity: 0, y: 18 }, visible: { opacity: 1, y: 0 } }
+
+// Automated action banner shown next to the confidence badge, driven by
+// the backend's risk_engine action (or a local fallback if not present yet).
+function getAutomatedAction(risk) {
+  switch (risk) {
+    case "HIGH":
+      return { action: "ESCALATE", label: "High risk -- auto-escalated, alert triggered", color: "#b4233e" }
+    case "MEDIUM":
+      return { action: "VERIFY", label: "Verification step recommended", color: "#92674b" }
+    default:
+      return { action: "ALLOW", label: "Call cleared -- no action needed", color: "#28756f" }
+  }
+}
+
+// Renders the raw STFT spectrogram (log-magnitude, [freq][time]) sent back
+// by the backend as backendData.spectrogram.
+function SpectrogramCanvas({ spectrogramData }) {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    if (!spectrogramData || !spectrogramData.length || !canvasRef.current) return
+    const ctx = canvasRef.current.getContext("2d")
+    const freqBins = spectrogramData.length
+    const timeBins = spectrogramData[0].length
+    canvasRef.current.width = timeBins
+    canvasRef.current.height = freqBins
+
+    const imgData = ctx.createImageData(timeBins, freqBins)
+    let max = -Infinity
+    let min = Infinity
+    spectrogramData.forEach((row) => row.forEach((v) => {
+      if (v > max) max = v
+      if (v < min) min = v
+    }))
+
+    for (let f = 0; f < freqBins; f++) {
+      for (let t = 0; t < timeBins; t++) {
+        const norm = (spectrogramData[f][t] - min) / (max - min + 1e-6)
+        const idx = ((freqBins - 1 - f) * timeBins + t) * 4
+        imgData.data[idx] = norm * 255
+        imgData.data[idx + 1] = norm * 100
+        imgData.data[idx + 2] = 255 - norm * 100
+        imgData.data[idx + 3] = 255
+      }
+    }
+    ctx.putImageData(imgData, 0, 0)
+  }, [spectrogramData])
+
+  if (!spectrogramData || !spectrogramData.length) return null
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="w-full rounded-xl border border-[#cdd7e9]"
+      style={{ imageRendering: "pixelated" }}
+    />
+  )
+}
+
+// Explainability panel: the raw acoustic-forensics readings (jitter,
+// replay score, prosody score) behind the dual-layer scores above.
+function SignalBreakdown({ forensics, detectionMode }) {
+  if (!forensics || Object.keys(forensics).length === 0) return null
+  const rows = [
+    { label: "Pitch stability (jitter)", value: forensics.jitter, flagged: forensics.jitter !== undefined && forensics.jitter < 0.03 },
+    { label: "Replay/loudspeaker signature", value: forensics.replay_score, flagged: (forensics.replay_score ?? 0) >= 0.5 },
+    { label: "Synthetic prosody likelihood", value: forensics.prosody_score, flagged: (forensics.prosody_score ?? 0) >= 0.5 },
+  ].filter((r) => r.value !== undefined)
+
+  if (!rows.length) return null
+
+  return (
+    <div className="mt-4 rounded-xl border border-[#cdd7e9] bg-white p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[#5876a5]">
+        Detection mode: {detectionMode || "N/A"}
+      </p>
+      {rows.map((r) => (
+        <div key={r.label} className="mt-2 flex justify-between text-sm">
+          <span className="text-slate-600">{r.label}</span>
+          <span className={r.flagged ? "text-[#b4233e] font-bold" : "text-[#28756f] font-semibold"}>
+            {r.value.toFixed(3)}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 function Result() {
   const navigate = useNavigate()
@@ -113,6 +200,9 @@ function Result() {
 
   const riskScore = Math.round(spoofProbability * 100)
   const confidencePercent = isReal ? 100 - riskScore : riskScore
+
+  const riskLevel = backendData?.risk || (riskScore >= 70 ? "HIGH" : riskScore >= 50 ? "MEDIUM" : "LOW")
+  const automatedAction = getAutomatedAction(riskLevel)
 
   // Impersonation & Attack Vector Assessment
   let attackVectorTitle = isReal
@@ -349,6 +439,12 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                 <div className="rounded-full border border-[#cdd7e9] bg-white px-4 py-2 text-xs font-medium text-[#506078]">
                   <span className="mr-2 inline-block h-2 w-2 rounded-full bg-[#3f82f1]" />
                   Confidence {report.confidence}%
+                </div>
+                <div
+                  className="rounded-full border px-4 py-2 text-xs font-bold"
+                  style={{ borderColor: automatedAction.color, color: automatedAction.color }}
+                >
+                  {(backendData?.action || automatedAction.action)}: {backendData?.action_message || automatedAction.label}
                 </div>
               </div>
             </motion.div>
@@ -666,6 +762,36 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                     </span>
                   </div>
                 </div>
+              </motion.section>
+            )}
+
+            {/* RAW ACOUSTIC SPECTROGRAM + FORENSIC SIGNAL BREAKDOWN */}
+            {(backendData?.spectrogram || backendData?.forensics) && (
+              <motion.section
+                {...animation}
+                transition={{ duration: 0.6, delay: 0.29 }}
+                className="mt-8 rounded-[1.75rem] border border-[#d7ddea] bg-white p-6 shadow-sm sm:p-8"
+              >
+                <span className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+                  Raw Signal Evidence
+                </span>
+                <h3 className="mt-1 text-xl font-bold text-[#14213b]">
+                  Spectrogram & Acoustic Forensics
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  The actual STFT spectrogram fed to the model, plus the raw jitter/replay/prosody readings behind the scores above.
+                </p>
+
+                {backendData?.spectrogram && (
+                  <div className="mt-5">
+                    <SpectrogramCanvas spectrogramData={backendData.spectrogram} />
+                  </div>
+                )}
+
+                <SignalBreakdown
+                  forensics={backendData?.forensics}
+                  detectionMode={backendData?.detection_mode}
+                />
               </motion.section>
             )}
 
