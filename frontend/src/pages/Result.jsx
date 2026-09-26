@@ -195,6 +195,131 @@ function ContentRiskPanel({ attackType, flaggedPhrases, transcript }) {
   )
 }
 
+function PerSpeakerRiskDisplay({ perSpeakerScores, currentSlot }) {
+  if (!perSpeakerScores || (!perSpeakerScores.A?.length && !perSpeakerScores.B?.length)) {
+    return null
+  }
+
+  const computeStats = (scores) => {
+    if (!scores || !scores.length) return null
+    const peak = Math.max(...scores)
+    const avg = scores.reduce((sum, v) => sum + v, 0) / scores.length
+    return { count: scores.length, peak, avg }
+  }
+
+  const statsA = computeStats(perSpeakerScores.A)
+  const statsB = computeStats(perSpeakerScores.B)
+
+  const getSlotBadge = (peakScore) => {
+    if (peakScore >= 0.70) return { label: "High Risk", bg: "bg-red-100", text: "text-red-700", border: "border-red-200" }
+    if (peakScore >= 0.50) return { label: "Medium Risk", bg: "bg-amber-100", text: "text-amber-800", border: "border-amber-200" }
+    return { label: "Low Risk", bg: "bg-emerald-100", text: "text-emerald-700", border: "border-emerald-200" }
+  }
+
+  return (
+    <div className="mt-8 rounded-[1.75rem] border border-[#d7ddea] bg-white p-6 shadow-sm sm:p-8">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <span className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+            Conversational Attribution
+          </span>
+          <h3 className="mt-1 text-xl font-bold text-[#14213b]">
+            Per-Speaker Risk Attribution (Slot A / Slot B)
+          </h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Turn-based acoustic slot tracking across call segments. Note: turn-boundary attribution, not identity-verified diarization.
+          </p>
+        </div>
+        <span className="self-start rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+          Turn Attribution
+        </span>
+      </div>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2">
+        {/* Slot A */}
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-100 font-bold text-xs text-indigo-800">
+                A
+              </span>
+              <h4 className="font-bold text-sm text-slate-900">Speaker Slot A</h4>
+            </div>
+            {statsA ? (
+              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase border ${getSlotBadge(statsA.peak).bg} ${getSlotBadge(statsA.peak).text} ${getSlotBadge(statsA.peak).border}`}>
+                {getSlotBadge(statsA.peak).label}
+              </span>
+            ) : (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                No activity
+              </span>
+            )}
+          </div>
+
+          {statsA ? (
+            <div className="mt-4 space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">Peak Spoof Score:</span>
+                <span className="font-mono font-bold text-slate-900">{(statsA.peak * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">Average Spoof Score:</span>
+                <span className="font-mono font-medium text-slate-700">{(statsA.avg * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">Analyzed Windows:</span>
+                <span className="font-semibold text-slate-800">{statsA.count} segment{statsA.count > 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 text-xs text-slate-400 italic">No audio attributed to Slot A</p>
+          )}
+        </div>
+
+        {/* Slot B */}
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-100 font-bold text-xs text-purple-800">
+                B
+              </span>
+              <h4 className="font-bold text-sm text-slate-900">Speaker Slot B</h4>
+            </div>
+            {statsB ? (
+              <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase border ${getSlotBadge(statsB.peak).bg} ${getSlotBadge(statsB.peak).text} ${getSlotBadge(statsB.peak).border}`}>
+                {getSlotBadge(statsB.peak).label}
+              </span>
+            ) : (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                No alternating turn detected
+              </span>
+            )}
+          </div>
+
+          {statsB ? (
+            <div className="mt-4 space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">Peak Spoof Score:</span>
+                <span className="font-mono font-bold text-slate-900">{(statsB.peak * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">Average Spoof Score:</span>
+                <span className="font-mono font-medium text-slate-700">{(statsB.avg * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-500">Analyzed Windows:</span>
+                <span className="font-semibold text-slate-800">{statsB.count} segment{statsB.count > 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 text-xs text-slate-400 italic">Single speaker active or no turn switch detected (&ge;4s silence needed to alternate)</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Result() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -1048,6 +1173,16 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                 detectionMode={backendData?.detection_mode}
               />
             </motion.section>
+
+            {/* PER-SPEAKER RISK DISPLAY (Slot A / Slot B) */}
+            {backendData?.per_speaker_scores && (
+              <motion.div {...animation} transition={{ duration: 0.6, delay: 0.295 }}>
+                <PerSpeakerRiskDisplay
+                  perSpeakerScores={backendData.per_speaker_scores}
+                  currentSlot={backendData.speaker_slot}
+                />
+              </motion.div>
+            )}
 
             {/* STEP 2: ON WHAT PARAMETERS IT DETECTED AI (Requested Section) */}
             <motion.section

@@ -44,6 +44,7 @@ const normaliseReport = (data, fallbackSeconds) => {
     forensics: data.forensics || { replay_score: 0.05, prosody_score: 0.05 },
     attack_type: data.attack_type ?? null,
     flagged_phrases: data.flagged_phrases ?? [],
+    per_speaker_scores: data.per_speaker_scores ?? { A: [], B: [] },
   }
 }
 
@@ -281,6 +282,10 @@ function Analyzing() {
           action: lastReport.action,
           action_message: lastReport.action_message,
           repeated_suspicious: lastReport.repeated_suspicious,
+          per_speaker_scores: lastReport.per_speaker_scores || {
+            A: allReports.filter((r) => (r.speaker_slot || "A") === "A").map((r) => r.spoof_probability),
+            B: allReports.filter((r) => r.speaker_slot === "B").map((r) => r.spoof_probability),
+          },
           transcript: fullTranscript || lastReport.transcript,
           attack_type: detectedAttackReport?.attack_type || lastReport.attack_type || null,
           flagged_phrases: detectedAttackReport?.flagged_phrases || lastReport.flagged_phrases || [],

@@ -364,6 +364,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
                     "impersonation_candidate": impersonation_candidate,
+                    "per_speaker_scores": session.get_per_speaker_scores() if config.ENABLE_PER_SPEAKER_SCORES else None,
                     "helpline": {
                         "number": "1930",
                         "label": "National Cyber Crime Helpline",
@@ -478,6 +479,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "is_speech": is_speech,
                     "early_4s_flagged": is_early_4s and impersonation_candidate,
                     "impersonation_candidate": impersonation_candidate,
+                    "per_speaker_scores": session.get_per_speaker_scores() if config.ENABLE_PER_SPEAKER_SCORES else None,
                     "helpline": {
                         "number": "1930",
                         "label": "National Cyber Crime Helpline",

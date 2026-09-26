@@ -12,6 +12,7 @@ class CallSession:
         self.turn_index = 0
         self.silence_streak = 0
         self.current_speaker_slot = "A"
+        self.per_speaker_scores = {"A": [], "B": []}
 
     def update_turn(self, is_speech: bool, silence_windows_to_flip: int = 2):
         if is_speech:
@@ -32,6 +33,15 @@ class CallSession:
             "speaker_slot": speaker_slot, "turn_id": turn_id,
         })
         self.current_risk = risk
+        slot = speaker_slot if speaker_slot in self.per_speaker_scores else "A"
+        if spoof_probability is not None:
+            self.per_speaker_scores.setdefault(slot, []).append(round(float(spoof_probability), 4))
+
+    def get_per_speaker_scores(self) -> dict:
+        return {
+            "A": list(self.per_speaker_scores.get("A", [])),
+            "B": list(self.per_speaker_scores.get("B", [])),
+        }
 def get_or_create_session(session_id: str = None) -> CallSession:
     with _lock:
         if session_id is None:

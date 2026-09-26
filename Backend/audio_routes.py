@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File
 from prediction_service import predict_audio
 from risk_engine import get_action
+import config
 from pydub import AudioSegment
 import tempfile
 import os
@@ -78,6 +79,13 @@ async def analyze_audio(file: UploadFile = File(...)):
     action_info = get_action(result.get("risk", "LOW"), spoof_score=result.get("spoof_probability"))
     result["action"] = action_info.get("action", "ALLOW")
     result["action_message"] = action_info.get("message", "")
+
+    if config.ENABLE_PER_SPEAKER_SCORES:
+        sp_score = round(float(result.get("spoof_probability", 0.0)), 4)
+        result["per_speaker_scores"] = {
+            "A": [sp_score],
+            "B": [],
+        }
 
     # Log to local DB (Phase 1 & Phase 3)
     try:
