@@ -235,6 +235,14 @@ function PerSpeakerRiskDisplay({ perSpeakerScores, currentSlot }) {
         </span>
       </div>
 
+      {/* Prominent Technical Disclaimer */}
+      <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/85 p-3.5 text-xs text-amber-900 flex items-start gap-2.5 shadow-xs">
+        <Info className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
+        <p className="leading-relaxed">
+          <strong className="font-semibold text-amber-950">Notice:</strong> Speaker separation is based on pause detection within a single audio channel and cannot reliably distinguish two speakers during normal conversational pacing or overlapping speech.
+        </p>
+      </div>
+
       <div className="mt-6 grid gap-4 sm:grid-cols-2">
         {/* Slot A */}
         <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">

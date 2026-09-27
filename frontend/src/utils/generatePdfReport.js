@@ -349,12 +349,16 @@ export function generatePdfReport({
   doc.setTextColor(15, 23, 42)
   doc.text("CONVERSATIONAL TURN ATTRIBUTION (SLOT A / SLOT B)", margin, currentY)
 
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7)
+  doc.setFont("helvetica", "italic")
+  doc.setFontSize(6.3)
   doc.setTextColor(100, 116, 139)
-  doc.text("Turn-boundary acoustic tracking across speaker turns. (Note: turn tracking, not identity biometric diarization).", margin, currentY + 4.5)
+  const splitNotice = doc.splitTextToSize(
+    "Notice: Speaker separation is based on pause detection within a single audio channel and cannot reliably distinguish two speakers during normal conversational pacing or overlapping speech.",
+    contentWidth
+  )
+  doc.text(splitNotice, margin, currentY + 4.2)
 
-  currentY += 7.5
+  currentY += splitNotice.length > 1 ? 8.5 : 6.5
 
   const slotW = (contentWidth - 4) / 2
   const slotH = 26

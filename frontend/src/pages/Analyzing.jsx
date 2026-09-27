@@ -22,11 +22,15 @@ const checkSilence = async (blob) => {
   }
 }
 
-const getWebSocketUrl = () => {
+const getWebSocketUrl = (sessionCode) => {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
   const host = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname
-  return `${protocol}//${host}:8000/audio-stream`
+  const base = `${protocol}//${host}:8000/audio-stream`
+  return sessionCode ? `${base}?session_id=${encodeURIComponent(sessionCode)}` : base
 }
+
+const generateSessionCode = () =>
+  Math.random().toString(36).slice(2, 8).toUpperCase()
 
 const normaliseReport = (data, fallbackSeconds) => {
   const spoofProbability = Number(data.spoof_probability ?? data.max_spoof_probability ?? 0)
@@ -54,6 +58,7 @@ function Analyzing() {
   const reduceMotion = useReducedMotion()
   const [stage, setStage] = useState(0)
   const [isRecording, setIsRecording] = useState(false)
+  const [callCode, setCallCode] = useState(null)
   const [secondsLeft, setSecondsLeft] = useState(RECORDING_DURATION)
   const [errorMessage, setErrorMessage] = useState("")
   const [reports, setReports] = useState([])
@@ -533,7 +538,9 @@ function Analyzing() {
         recorder.start(500)
 
         reportsRef.current = []
-        const socket = new WebSocket(getWebSocketUrl())
+        const sessionCode = generateSessionCode()
+        setCallCode(sessionCode)
+        const socket = new WebSocket(getWebSocketUrl(sessionCode))
         socket.binaryType = "arraybuffer"
         socketRef.current = socket
         socket.onopen = () => setStage(1)
@@ -708,6 +715,14 @@ function Analyzing() {
             )}
 
             <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400"><ShieldCheck className="h-4 w-4 text-[#8bc8ba]" />No audio is stored after this session.</div>
+
+            {mode === "record" && callCode && (
+              <div className="mt-4 rounded-xl border border-[#75a9ff]/30 bg-[#0e1c33] px-4 py-3 text-center">
+                <p className="text-[10px] uppercase tracking-[0.15em] text-[#8bb2ff]">Listen-in code</p>
+                <p className="mt-1 font-mono text-2xl font-bold tracking-widest text-white">{callCode}</p>
+                <p className="mt-1 text-[11px] text-[#8291aa]">Give this to the second device to hear this call live</p>
+              </div>
+            )}
           </motion.div>
 
           <motion.aside initial={reduceMotion ? false : { opacity: 0, x: 14 }} animate={reduceMotion ? false : { opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: reduceMotion ? 0 : 0.12 }} className="overflow-hidden rounded-4xl border border-[#75a9ff]/20 bg-[#07101d]/90 shadow-[0_30px_80px_rgba(0,0,0,0.28)] backdrop-blur">

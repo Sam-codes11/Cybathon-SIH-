@@ -1,4 +1,5 @@
 import config
+import audio_relay
 import db, session_manager
 import voiceprint
 import content_risk, transcription
@@ -280,6 +281,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 break
             data = await websocket.receive_bytes()
             audio_buffer.extend(data)
+            await audio_relay.broadcast_audio(session_id, data)
 
             if analysis_count == 0 and len(audio_buffer) >= HOP_BYTES and len(audio_buffer) < WINDOW_BYTES:
                 chunk_bytes = bytes(audio_buffer[:HOP_BYTES])
@@ -536,6 +538,27 @@ async def websocket_endpoint(websocket: WebSocket):
         # had already gone away -- same cleanup as a normal disconnect,
         # just reached through the race-condition path instead.
         await finalize_session()
+
+
+@app.websocket("/audio-listen")
+async def audio_listen_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    session_id = websocket.query_params.get("session_id")
+    if not session_id:
+        await websocket.close(code=4000)
+        return
+    audio_relay.register_listener(session_id, websocket)
+    try:
+        while True:
+            # Person 2's tab doesn't need to send anything; this just
+            # keeps the connection open and detects disconnects.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        audio_relay.unregister_listener(session_id, websocket)
 
 
 # ---------------------------------------------------------

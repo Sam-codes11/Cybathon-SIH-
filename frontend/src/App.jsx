@@ -6,6 +6,7 @@ import Enrollment from "./pages/Enrollment"
 import Dashboard from "./pages/Dashboard"
 import CallDetail from "./pages/CallDetail"
 import Analytics from "./pages/Analytics"
+import Listen from "./pages/Listen"
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/call/:id" element={<CallDetail />} />
+        <Route path="/listen" element={<Listen />} />
       </Routes>
     </BrowserRouter>
   )
