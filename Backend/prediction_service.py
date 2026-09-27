@@ -808,7 +808,7 @@ def assess_impersonation_threat(max_spoof_prob, segment_results=None, filename=N
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
     dossier_text = (
         f"=================================================================\n"
-        f"VOICE SHIELD - FORENSIC AI VOICE FRAUD INCIDENT REPORT\n"
+        f"Voice Guard - FORENSIC AI VOICE FRAUD INCIDENT REPORT\n"
         f"=================================================================\n"
         f"Date & Time           : {timestamp}\n"
         f"Audio Source          : {filename or 'Live_Call_Recording'}\n"

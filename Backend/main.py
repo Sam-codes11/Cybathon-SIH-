@@ -691,6 +691,6 @@ def analytics_summary():
 @app.get("/")
 def home():
     return {
-        "message": "Voice Shield Backend is running",
+        "message": "Voice Guard Backend is running",
         "live_detection": True
     }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Voice Shield uses a CNN-based audio spoof detection model trained on the ASVspoof2019 LA dataset.
+Voice Guard uses a CNN-based audio spoof detection model trained on the ASVspoof2019 LA dataset.
 
 The evaluation pipeline was improved from evaluating only a fixed 4-second portion of each audio file to analyzing the **complete audio using overlapping 4-second windows**.
 

@@ -123,7 +123,7 @@ function Home() {
               </h1>
 
               <p className="mt-6 max-w-xl text-base leading-7 text-[#a8b3c8] sm:text-lg">
-                Submit one voice sample. Voice Shield checks for synthetic-speech
+                Submit one voice sample. Voice Guard checks for synthetic-speech
                 patterns and returns the type of voice, risk score, and likely
                 attack method.
               </p>
@@ -348,7 +348,7 @@ function Home() {
               </div>
 
               <p className="max-w-sm text-sm leading-6 text-[#95a4bc]">
-                Voice Shield turns technical signals into a simple, usable
+                Voice Guard turns technical signals into a simple, usable
                 decision path for suspicious calls.
               </p>
             </motion.div>
@@ -486,7 +486,7 @@ function Home() {
           >
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#a3c5ff]">
-                Voice Shield prototype
+                Voice Guard prototype
               </p>
 
               <h2 className="mt-3 font-display text-2xl font-semibold tracking-[-0.04em] text-white sm:text-3xl">

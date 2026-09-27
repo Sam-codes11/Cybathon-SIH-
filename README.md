@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ Voice Shield
+# 🛡️ Voice Guard
 ### Real-Time AI Voice Clone & Impersonation Attack Defense System
 **Built for Smart India Hackathon (SIH)**
 
@@ -34,9 +34,9 @@ Current commercial detectors and research tools operate as **passive classifiers
 
 ---
 
-## 🚀 Key Innovations in Voice Shield
+## 🚀 Key Innovations in Voice Guard
 
-Voice Shield transforms voice spoof detection from a passive test into an **active, real-time incident defense platform**:
+Voice Guard transforms voice spoof detection from a passive test into an **active, real-time incident defense platform**:
 
 ### 1. ⚡ 4-Second Early Interception Engine
 - Evaluates incoming audio streams using overlapping sliding STFT windows (4s window / 2s hop).
@@ -44,7 +44,7 @@ Voice Shield transforms voice spoof detection from a passive test into an **acti
 - If synthetic markers or anomalous phase dynamics are detected within the first 4 seconds, an emergency interceptor alert triggers immediately before the victim can be socially engineered.
 
 ### 2. 🔍 Contextual Impersonation Attack Diagnosis
-- When synthetic audio is flagged, Voice Shield presents an interactive identity check:
+- When synthetic audio is flagged, Voice Guard presents an interactive identity check:
   > *"Do you personally know this caller? Are they claiming to be a family member, police, or bank manager?"*
 - **Known Caller Claim:** Instantly flags the call as an **Active AI Impersonation Attack (Digital Arrest / Virtual Kidnapping)**.
 - **Unknown Caller:** Categorizes the threat as an **Automated Synthetic Spam / Robocall**.
@@ -113,7 +113,7 @@ Voice Shield transforms voice spoof detection from a passive test into an **acti
 
 The core detection engine was evaluated on the gold-standard **ASVspoof 2019 Logical Access (LA)** evaluation benchmark:
 
-| Metric | Whole-Audio Sliding Window (Voice Shield) | Previous Fixed 4s Baseline | Net Improvement |
+| Metric | Whole-Audio Sliding Window (Voice Guard) | Previous Fixed 4s Baseline | Net Improvement |
 |:---|:---:|:---:|:---:|
 | **Recall** | **91.37%** | 76.88% | **+14.49%** |
 | **F1 Score** | **90.91%** | 86.73% | **+4.18%** |
@@ -206,7 +206,7 @@ npm run dev
 
 ## ⚖️ Legal & Statutory Alignment
 
-Voice Shield assists law enforcement and citizens under relevant provisions of the **Information Technology Act, 2000** and the **Bharatiya Nyaya Sanhita (BNS)**:
+Voice Guard assists law enforcement and citizens under relevant provisions of the **Information Technology Act, 2000** and the **Bharatiya Nyaya Sanhita (BNS)**:
 - **Section 66D, IT Act:** Punishment for cheating by personation by using computer resource (up to 3 years imprisonment).
 - **Section 66E / 43, IT Act:** Privacy violation and unauthorized computer access.
 - **BNS Sections on Personation & Extortion:** Criminal impersonation to commit financial extortion.
@@ -215,7 +215,7 @@ Voice Shield assists law enforcement and citizens under relevant provisions of t
 
 ## 👥 Smart India Hackathon Team
 
-- **Project:** Voice Shield (AI Voice Authentication & Predictive Defense)
+- **Project:** Voice Guard (AI Voice Authentication & Predictive Defense)
 - **Problem Statement:** Real-Time AI Voice Cloning & Impersonation Attack Prevention
 - **Focus Area:** Cyber Security, Citizen Protection & Law Enforcement Assistance
 

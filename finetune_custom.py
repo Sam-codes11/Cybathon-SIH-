@@ -107,7 +107,7 @@ class CustomAudioDataset(Dataset):
 
 def finetune():
     print("=" * 60)
-    print("VOICE SHIELD — FINE-TUNING ON REAL-WORLD & F5-TTS SAMPLES")
+    print("VOICE GUARD — FINE-TUNING ON REAL-WORLD & F5-TTS SAMPLES")
     print(f"Device: {DEVICE} | LR: {LEARNING_RATE} | Epochs: {EPOCHS}")
     print("=" * 60)
 

@@ -146,7 +146,7 @@ def evaluate_single_model(model_path, name):
 
 def main():
     print("=" * 65)
-    print("VOICE SHIELD — CUSTOM DATASET BEFORE vs AFTER EVALUATION")
+    print("VOICE GUARD — CUSTOM DATASET BEFORE vs AFTER EVALUATION")
     print("=" * 65)
 
     base_res = evaluate_single_model(BASE_MODEL_PATH, "Base ASVspoof Model")

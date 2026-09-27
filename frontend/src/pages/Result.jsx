@@ -498,7 +498,7 @@ function Result() {
   const generateDossierText = () => {
     const timestamp = new Date().toISOString().replace("T", " ").substring(0, 19) + " UTC"
     return `=================================================================
-VOICE SHIELD - FORENSIC AI VOICE FRAUD INCIDENT REPORT
+VOICE GUARD - FORENSIC AI VOICE FRAUD INCIDENT REPORT
 =================================================================
 Report ID               : VS-INCIDENT-${Date.now()}
 Date & Time             : ${timestamp}
@@ -618,7 +618,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
       const url = URL.createObjectURL(blob)
       const link = document.createElement("a")
       link.href = url
-      link.download = `VoiceShield_Forensic_Report_${new Date().toISOString().slice(0, 10)}.txt`
+      link.download = `VoiceGuard_Forensic_Report_${new Date().toISOString().slice(0, 10)}.txt`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -657,7 +657,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
             >
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#5876a5]">
-                  Voice Shield · Predictive Incident Defense
+                  Voice Guard · Predictive Incident Defense
                 </p>
                 <h1 className="mt-3 font-display text-3xl font-semibold tracking-[-0.04em] text-[#14203a] sm:text-4xl">
                   {intercepted
@@ -717,7 +717,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
               <motion.div
                 {...animation}
                 transition={{ duration: 0.5, delay: 0.1 }}
-                className="mt-6 overflow-hidden rounded-2xl border border-[#b84f60] bg-gradient-to-r from-[#8f2639] via-[#a83745] to-[#702536] p-5 text-white shadow-lg"
+                className="mt-6 overflow-hidden rounded-2xl border border-[#b84f60] bg-linear-to-r from-[#8f2639] via-[#a83745] to-[#702536] p-5 text-white shadow-lg"
               >
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-start gap-3.5">
@@ -772,7 +772,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
               <motion.div
                 {...animation}
                 transition={{ duration: 0.5, delay: 0.12 }}
-                className="mt-6 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/95 via-sky-50/90 to-indigo-50/95 p-5 shadow-sm sm:p-6"
+                className="mt-6 rounded-2xl border border-blue-200 bg-linear-to-r from-blue-50/95 via-sky-50/90 to-indigo-50/95 p-5 shadow-sm sm:p-6"
               >
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-blue-200/80 pb-4">
                   <div className="flex items-start gap-3.5">
@@ -900,7 +900,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
               <motion.div
                 {...animation}
                 transition={{ duration: 0.5, delay: 0.12 }}
-                className="mt-6 rounded-2xl border border-red-300 bg-gradient-to-r from-red-50 via-rose-50 to-orange-50 p-5 shadow-sm sm:p-6"
+                className="mt-6 rounded-2xl border border-red-300 bg-linear-to-r from-red-50 via-rose-50 to-orange-50 p-5 shadow-sm sm:p-6"
               >
                 <div className="flex items-start gap-3.5">
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white shadow-md">
@@ -1220,7 +1220,7 @@ STATUTORY REFERENCES & GOVERNMENT HELPLINES:
                     Detection Parameters
                   </span>
                   <h3 className="mt-1 text-xl font-bold text-[#14213b]">
-                    On what parameters did Voice Shield detect AI?
+                    On what parameters did Voice Guard detect AI?
                   </h3>
                   <p className="mt-1 text-xs text-slate-500">
                     Specific acoustic anomalies, pitch trajectories, and risk signatures evaluated during the call.

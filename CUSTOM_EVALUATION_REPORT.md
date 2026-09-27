@@ -1,7 +1,7 @@
-# Voice Shield — Real-World Custom Dataset & Domain Adaptation Report
+# Voice Guard — Real-World Custom Dataset & Domain Adaptation Report
 
 **Smart India Hackathon (SIH) Prototype Submission**  
-**Component:** Voice Shield Spoof Detection Engine (`SpoofCNN`)  
+**Component:** Voice Guard Spoof Detection Engine (`SpoofCNN`)  
 **Date:** September 10, 2026  
 **Hardware Evaluated:** NVIDIA GeForce RTX 3050 Laptop GPU (CUDA Acceleration)
 
@@ -57,7 +57,7 @@ Evaluation conducted on the complete custom validation set using sliding 4-secon
   Actual AI   :           0 (FN)           12 (TP)
 ```
 
-### Voice Shield Fine-Tuned Model:
+### Voice Guard Fine-Tuned Model:
 ```
                  Predicted Real    Predicted AI
   Actual Real :          11 (TN)            3 (FP)  <-- Legitimate voices verified
